@@ -52,12 +52,28 @@ async function openTunnel() {
     return;
   }
 
-  // NEW: Check if port 1080 is already listening from a previous/crashed process
+  // Check if port 1080 is already listening from a previous/crashed process
   const portInUse = await isPortAlreadyListening();
   if (portInUse) {
     console.log('[TUNNEL] Port %d already in use — reusing existing SOCKS5 proxy at %s:%d', SOCKS_PORT, SOCKS_HOST, SOCKS_PORT);
     tunnelOpen = true;
     return;
+  }
+
+  // Cleanup any orphaned sshpass processes that might be hanging on port 1080
+  try {
+    execSync('pkill -f "sshpass.*ssh.*-D.*1080"', { stdio: 'ignore' });
+    // Small delay to let the port be released
+    await new Promise(r => setTimeout(r, 500));
+    // Verify port is now free
+    const stillInUse = await isPortAlreadyListening();
+    if (stillInUse) {
+      console.warn('[TUNNEL] Port %d still in use after cleanup, will try anyway', SOCKS_PORT);
+    } else {
+      console.log('[TUNNEL] Cleaned up orphaned tunnel processes');
+    }
+  } catch (e) {
+    // pkill returns non-zero if no processes found — that's fine
   }
 
   const host = process.env.SSH_HOST;
