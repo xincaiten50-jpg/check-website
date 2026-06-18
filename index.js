@@ -59,6 +59,13 @@ const CONFIG = {
     '搜一搜',
     '大家都在搜',
   ],
+  // Trusted search-portal domains. When a link's finalUrl lands on one of
+  // these (after redirect), we skip the MIN_BODY_LENGTH and SUSPICIOUS_TEXT
+  // checks — search portals legitimately have short body text and contain
+  // words like "search now"/"trending searches" that we otherwise flag.
+  // aj*.opnews.net redirects to m.sm.cn search results; without this
+  // whitelist they were mis-classified as dead (failure-state.json, 2026-06).
+  TRUSTED_SEARCH_DOMAINS: ['sm.cn', 'm.sm.cn'],
   // Warm-up thủ công: mở 1 URL để bạn tự login/solve captcha rồi dùng lại profile
   MANUAL_WARMUP_URL: '',
   MANUAL_WARMUP_WAIT_MS: 90_000,
@@ -360,6 +367,15 @@ function toHostnameSafe(rawUrl) {
   }
 }
 
+// True if `rawUrl`'s hostname is sm.cn or any subdomain of it (m.sm.cn, etc).
+// Used to skip body-length / suspicious-marker checks on legitimate search
+// portal pages.
+function isTrustedSearchDomain(rawUrl) {
+  const host = toHostnameSafe(rawUrl);
+  if (!host) return false;
+  return CONFIG.TRUSTED_SEARCH_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
 function getNaiveRootDomain(hostname) {
   const parts = String(hostname || '').split('.').filter(Boolean);
   if (parts.length <= 2) return parts.join('.');
@@ -658,15 +674,25 @@ async function checkLink(context, reconnectTunnel, url) {
         return makeResult(url, true, status, null, finalUrl, title);
       }
 
-      const isEmpty  = !bodyText || bodyText.trim().length < CONFIG.MIN_BODY_LENGTH;
+      // Trusted search-portal domain (e.g. m.sm.cn): skip the body-length
+      // and suspicious-marker checks. Search portals legitimately have short
+      // body text and contain phrases like "search now" that we would
+      // otherwise flag. See CONFIG.TRUSTED_SEARCH_DOMAINS.
+      const trusted = isTrustedSearchDomain(finalUrl);
 
-      if (isEmpty) {
-        return makeResult(url, false, status, 'Trang trống hoặc nội dung quá ít', finalUrl);
-      }
+      if (!trusted) {
+        const isEmpty  = !bodyText || bodyText.trim().length < CONFIG.MIN_BODY_LENGTH;
 
-      const suspiciousScore = countSuspiciousMarkers(`${title}\n${bodyText.slice(0, 6000)}`);
-      if (suspiciousScore >= CONFIG.SUSPICIOUS_TEXT_THRESHOLD) {
-        return makeResult(url, false, status, `Nội dung nghi ngờ (điểm=${suspiciousScore})`, finalUrl, title);
+        if (isEmpty) {
+          return makeResult(url, false, status, 'Trang trống hoặc nội dung quá ít', finalUrl);
+        }
+
+        const suspiciousScore = countSuspiciousMarkers(`${title}\n${bodyText.slice(0, 6000)}`);
+        if (suspiciousScore >= CONFIG.SUSPICIOUS_TEXT_THRESHOLD) {
+          return makeResult(url, false, status, `Nội dung nghi ngờ (điểm=${suspiciousScore})`, finalUrl, title);
+        }
+      } else {
+        console.log(`🔓 Trusted search-portal domain (${toHostnameSafe(finalUrl)}), skipping content checks: ${url}`);
       }
 
       // ── Tất cả lớp đều qua → link SỐNG ──────────────────────────────────
