@@ -92,7 +92,6 @@ const cycleTracker = {
 
 // Shared browser context for graceful shutdown
 let sharedBrowserContext = null;
-let sharedBrowserContextDirect = null;
 
 function nowLocal() {
   return new Date().toLocaleString('vi-VN', {
@@ -1267,7 +1266,7 @@ async function scheduleNext() {
 // ─── GRACEFUL SHUTDOWN ──────────────────────────────────────────────────────
 process.on('SIGINT', async () => {
   console.log('\n[SHUTDOWN] Nhận tín hiệu SIGINT, đang dọn dẹp...');
-  const toClose = [sharedBrowserContext, sharedBrowserContextDirect].filter(Boolean);
+  const toClose = [sharedBrowserContext].filter(Boolean);
   if (toClose.length) {
     try {
       await Promise.all(toClose.map((c) => c.close().catch(() => {})));
@@ -1277,14 +1276,13 @@ process.on('SIGINT', async () => {
     }
   }
   sharedBrowserContext = null;
-  sharedBrowserContextDirect = null;
   process.exit(0);
 });
 
 
 process.on('SIGTERM', async () => {
   console.log('\n[SHUTDOWN] Nhận tín hiệu SIGTERM, đang dọn dẹp...');
-  const toClose = [sharedBrowserContext, sharedBrowserContextDirect].filter(Boolean);
+  const toClose = [sharedBrowserContext].filter(Boolean);
   if (toClose.length) {
     try {
       await Promise.all(toClose.map((c) => c.close().catch(() => {})));
@@ -1294,7 +1292,6 @@ process.on('SIGTERM', async () => {
     }
   }
   sharedBrowserContext = null;
-  sharedBrowserContextDirect = null;
   process.exit(0);
 });
 
