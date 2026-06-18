@@ -168,6 +168,49 @@ test('23:59 VN -> next run next day 01:00 VN', () => {
   assertEqual(next.day, 1, 'next day');
 });
 
+// ─── Test 5: Year-boundary and leap-year edge cases ───────────────
+console.log('\n=== Test 5: Year-boundary and leap-year edge cases ===');
+
+test('2026-12-31 23:30 VN -> next run 2027-01-01 01:00 VN (year boundary)', () => {
+  // 23:30 VN on 2026-12-31 = 16:30 UTC on 2026-12-31
+  const d = new Date('2026-12-31T16:30:00Z');
+  const next = getNextScheduledRun(d);
+  assertEqual(next.hour, 1, 'next hour');
+  assertEqual(next.day, 1, 'next day');
+  assertEqual(next.month, 1, 'next month');
+  assertEqual(next.year, 2027, 'next year');
+});
+
+test('2028-02-28 23:30 VN (leap year) -> next run 2028-02-29 01:00 VN', () => {
+  // 23:30 VN on 2028-02-28 = 16:30 UTC on 2028-02-28
+  const d = new Date('2028-02-28T16:30:00Z');
+  const next = getNextScheduledRun(d);
+  assertEqual(next.hour, 1, 'next hour');
+  assertEqual(next.day, 29, 'next day (leap day)');
+  assertEqual(next.month, 2, 'same month');
+  assertEqual(next.year, 2028, 'same year');
+});
+
+test('2027-02-28 23:30 VN (non-leap) -> next run 2027-03-01 01:00 VN', () => {
+  // 23:30 VN on 2027-02-28 = 16:30 UTC on 2027-02-28
+  const d = new Date('2027-02-28T16:30:00Z');
+  const next = getNextScheduledRun(d);
+  assertEqual(next.hour, 1, 'next hour');
+  assertEqual(next.day, 1, 'first day of next month');
+  assertEqual(next.month, 3, 'next month');
+  assertEqual(next.year, 2027, 'same year');
+});
+
+test('2026-04-30 23:30 VN (30-day month end) -> next run 2026-05-01 01:00 VN', () => {
+  // 23:30 VN on 2026-04-30 = 16:30 UTC on 2026-04-30
+  const d = new Date('2026-04-30T16:30:00Z');
+  const next = getNextScheduledRun(d);
+  assertEqual(next.hour, 1, 'next hour');
+  assertEqual(next.day, 1, 'first day of next month');
+  assertEqual(next.month, 5, 'next month');
+  assertEqual(next.year, 2026, 'same year');
+});
+
 // ─── Summary ───
 console.log(`\n${'═'.repeat(40)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
