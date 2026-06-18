@@ -1,25 +1,43 @@
 /**
  * SSH Tunnel — creates a local SOCKS5 proxy via SSH tunnel to a remote server.
  *
- * Uses system `ssh` command with sshpass for password auth.
- * Spawns: sshpass -p <pass> ssh -N -D 1080 -o StrictHostKeyChecking=no user@host
+ * Uses system `ssh` with public-key auth (no sshpass). The private key path
+ * is read from SSH_KEY_PATH and may start with `~` (expanded via os.homedir()).
+ * Spawns: ssh -i <key> -N -D 1080 -o BatchMode=yes -o IdentitiesOnly=yes
+ *         -o StrictHostKeyChecking=accept-new user@host
  *
  * Exported functions:
  *   openTunnel()  — opens SOCKS5 proxy at 127.0.0.1:1080; skips if already open
  *   closeTunnel() — kills SSH process and SOCKS5 server
  *
  * Env vars (from .env):
- *   SSH_HOST, SSH_PORT, SSH_USER, SSH_PASSWORD
+ *   SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY_PATH
  */
 
 const { spawn, execSync } = require('child_process');
+const fs = require('fs');
 const net = require('net');
+const os = require('os');
+const path = require('path');
 
 const SOCKS_PORT = 1080;
 const SOCKS_HOST = '127.0.0.1';
 
 let sshProcess = null;
 let tunnelOpen = false;
+
+/**
+ * Expand a leading `~` in a path to the current user's home directory.
+ * Node does not do this automatically (only the shell does).
+ */
+function expandHome(p) {
+  if (!p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
 
 /**
  * Checks if port 1080 is already listening (SOCKS proxy from a previous run).
@@ -60,9 +78,9 @@ async function openTunnel() {
     return;
   }
 
-  // Cleanup any orphaned sshpass processes that might be hanging on port 1080
+  // Cleanup any orphaned ssh processes that might be hanging on port 1080
   try {
-    execSync('pkill -f "sshpass.*ssh.*-D.*1080"', { stdio: 'ignore' });
+    execSync('pkill -f "ssh.*-D.*1080"', { stdio: 'ignore' });
     // Small delay to let the port be released
     await new Promise(r => setTimeout(r, 500));
     // Verify port is now free
@@ -79,34 +97,45 @@ async function openTunnel() {
   const host = process.env.SSH_HOST;
   const port = parseInt(process.env.SSH_PORT || '22', 10);
   const user = process.env.SSH_USER;
-  const password = process.env.SSH_PASSWORD;
+  const rawKeyPath = process.env.SSH_KEY_PATH;
+  const keyPath = expandHome(rawKeyPath);
 
-  if (!host || !user || !password) {
-    throw new Error('[TUNNEL] Missing SSH config: SSH_HOST, SSH_USER, SSH_PASSWORD must be set in .env');
+  if (!host || !user || !keyPath) {
+    throw new Error('[TUNNEL] Missing SSH config: SSH_HOST, SSH_USER, SSH_KEY_PATH must be set in .env');
+  }
+
+  // Fail fast with a clear message if the key file is missing — much easier
+  // to debug than waiting for ssh to fail with a cryptic "Load key ...: No
+  // such file or directory" deep in stderr.
+  if (!fs.existsSync(keyPath)) {
+    throw new Error(`[TUNNEL] SSH key not found at ${keyPath} — set SSH_KEY_PATH in .env (got: ${rawKeyPath})`);
   }
 
   return new Promise((resolve, reject) => {
     let resolvedFlag = false;
     let rejectTimer = null;
 
-    console.log('[TUNNEL] Starting SSH tunnel to %s:%d...', host, port);
+    console.log('[TUNNEL] Starting SSH tunnel to %s:%d (key: %s)...', host, port, keyPath);
 
-    // Use sshpass with system ssh for reliable password auth
+    // ssh with public-key auth, no password prompts.
     // -N: no remote command (just port forwarding)
     // -D 1080: dynamic SOCKS5 proxy on localhost:1080
-    // -o StrictHostKeyChecking=no: skip host key verification
+    // -o BatchMode=yes: never prompt; fail clearly if key is rejected
+    // -o IdentitiesOnly=yes: only use the key we provided (avoid "too many auth failures")
+    // -o StrictHostKeyChecking=accept-new: trust new hosts, reject changed ones
     // -o ServerAliveInterval=30: keep connection alive
-    // -o ExitOnForwardFailure=yes: exit if forwarding fails
-    sshProcess = spawn('sshpass', [
-      '-p', password,
-      'ssh',
+    // -o ExitOnForwardFailure=yes: exit immediately if -D cannot bind
+    sshProcess = spawn('ssh', [
+      '-i', keyPath,
       '-N',
-      '-D', `${SOCKS_HOST}:${SOCKS_PORT}`,
-      '-o', 'StrictHostKeyChecking=no',
+      '-D', String(SOCKS_PORT),
+      '-p', String(port),
+      '-o', 'BatchMode=yes',
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'StrictHostKeyChecking=accept-new',
       '-o', 'ServerAliveInterval=30',
       '-o', 'ServerAliveCountMax=3',
       '-o', 'ExitOnForwardFailure=yes',
-      '-o', `Port=${port}`,
       `${user}@${host}`,
     ], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -117,6 +146,10 @@ async function openTunnel() {
 
     sshProcess.stderr.on('data', (chunk) => {
       stderrData = Buffer.concat([stderrData, chunk]);
+      // Log ssh stderr in real time so auth errors / bad-permission warnings
+      // surface immediately instead of only at process exit.
+      const text = chunk.toString('utf8').trim();
+      if (text) console.error(`[TUNNEL] ssh: ${text}`);
     });
 
     sshProcess.on('error', (err) => {
@@ -147,7 +180,7 @@ async function openTunnel() {
           netClient.destroy();
           resolvedFlag = true;
           tunnelOpen = true;
-          console.log('[TUNNEL] SOCKS5 opened at %s:%d (via sshpass+ssh)', SOCKS_HOST, SOCKS_PORT);
+          console.log('[TUNNEL] SOCKS5 opened at %s:%d (via ssh key auth)', SOCKS_HOST, SOCKS_PORT);
           resolve();
         });
 
