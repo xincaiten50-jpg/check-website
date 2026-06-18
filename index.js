@@ -17,7 +17,7 @@ const CONFIG = {
   RETRY_MAX:        6,               // Số lần thử lại khi lỗi
   DELAY_MIN_MS: 2000,            // Delay tối thiểu giữa các request
   DELAY_MAX_MS: 3500,           // Delay tối đa giữa các request
-  MIN_BODY_LENGTH: 30,            // Số ký tự tối thiểu để coi trang còn sống (giảm từ 100: search-portal sm.cn redirect có ~40-60 chars)
+  MIN_BODY_LENGTH: 100,           // Số ký tự tối thiểu để coi trang còn sống
   INPUT_FILE:       'links.txt',
   OUTPUT_FILE:      'results.json',
   LOG_FILE:         'errors.log',
