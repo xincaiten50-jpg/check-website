@@ -3,37 +3,37 @@
     "lastNormalReportDate": "2026-06-11"
   },
   "https://aj05.opnews.net": {
-    "consecutiveFailures": 3,
-    "lastFailureAt": "2026-06-18T08:12:41.400Z",
+    "consecutiveFailures": 4,
+    "lastFailureAt": "2026-06-18T10:13:10.917Z",
     "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm644377&q=%20%E7%95%99%E5%AD%A6%E8%8B%B1%E5%9B%BD%E5%A5%96%E5%AD%A6%E9%87%91%E7%94%B3%E8%AF%B7",
+    "finalUrl": "https://wm.m.sm.cn/s?from=wm644377&q=%20%E9%9F%A9%E5%9B%BD%E9%9A%86%E9%BC%BB%E6%89%8B%E6%9C%AF",
     "statusCode": 200,
     "notifiedAtCount": 3,
     "recoveryNotified": false
   },
-  "https://aj08.opnews.net": {
-    "consecutiveFailures": 2,
-    "lastFailureAt": "2026-06-18T08:12:41.400Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm476745&q=%20na6913%E8%BD%B4%E6%89%BF",
-    "statusCode": 200,
-    "notifiedAtCount": 0,
-    "recoveryNotified": false
-  },
-  "https://aj06.opnews.net": {
-    "consecutiveFailures": 1,
-    "lastFailureAt": "2026-06-18T08:12:41.400Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm223171&q=%20%E6%89%8B%E6%9C%BA%E6%B8%B8%E6%88%8F%E5%8F%AF%E4%BB%A5%E4%BB%A3%E7%90%86%E5%90%97",
-    "statusCode": 200,
-    "notifiedAtCount": 0,
-    "recoveryNotified": false
-  },
   "https://aj23.opnews.net": {
-    "consecutiveFailures": 1,
-    "lastFailureAt": "2026-06-18T08:12:41.400Z",
+    "consecutiveFailures": 2,
+    "lastFailureAt": "2026-06-18T10:13:10.917Z",
     "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm875120&q=%20%E9%BA%BB%E8%BE%A3%E7%83%AB%E7%9A%84%E4%BB%B7%E6%A0%BC",
+    "finalUrl": "https://wm.m.sm.cn/s?from=wm875120&q=%20%E5%8F%8D%E6%B8%97%E9%80%8F%E6%B8%85%E6%B4%97%E8%AE%BE%E5%A4%87",
+    "statusCode": 200,
+    "notifiedAtCount": 0,
+    "recoveryNotified": false
+  },
+  "https://aj01.opnews.net": {
+    "consecutiveFailures": 1,
+    "lastFailureAt": "2026-06-18T10:13:10.917Z",
+    "lastReason": "Trang trống hoặc nội dung quá ít",
+    "finalUrl": "https://wm.m.sm.cn/s?from=wm640209&q=%20%E4%B8%80%E8%88%AC%E7%9A%84%E6%95%B4%E4%BD%93%E5%8E%A8%E6%88%BF%E5%A4%9A%E5%B0%91%E9%92%B1",
+    "statusCode": 200,
+    "notifiedAtCount": 0,
+    "recoveryNotified": false
+  },
+  "https://aj07.opnews.net": {
+    "consecutiveFailures": 1,
+    "lastFailureAt": "2026-06-18T10:13:10.917Z",
+    "lastReason": "Trang trống hoặc nội dung quá ít",
+    "finalUrl": "https://wm.m.sm.cn/s?from=wm550790&q=%20%E8%B4%B4%E7%89%87led",
     "statusCode": 200,
     "notifiedAtCount": 0,
     "recoveryNotified": false

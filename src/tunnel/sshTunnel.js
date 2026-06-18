@@ -22,12 +22,41 @@ let sshProcess = null;
 let tunnelOpen = false;
 
 /**
- * Opens the SSH tunnel. Idempotent — if already open, skips silently.
+ * Checks if port 1080 is already listening (SOCKS proxy from a previous run).
+ * @returns {Promise<boolean>}
+ */
+async function isPortAlreadyListening() {
+  return new Promise((resolve) => {
+    const client = net.connect(SOCKS_PORT, SOCKS_HOST, () => {
+      client.destroy();
+      resolve(true); // Port is open and reachable
+    });
+    client.on('error', () => {
+      resolve(false); // Port not reachable
+    });
+    client.setTimeout(2000, () => {
+      client.destroy();
+      resolve(false);
+    });
+  });
+}
+
+/**
+ * Opens the SSH tunnel. Idempotent — if already open (by this process OR another),
+ * skips silently and reuses the existing SOCKS proxy on port 1080.
  * @returns {Promise<void>}
  */
 async function openTunnel() {
   if (tunnelOpen) {
-    console.log('[TUNNEL] SOCKS5 already open at %s:%d, skipping', SOCKS_HOST, SOCKS_PORT);
+    console.log('[TUNNEL] SOCKS5 already open at %s:%d (local state), skipping', SOCKS_HOST, SOCKS_PORT);
+    return;
+  }
+
+  // NEW: Check if port 1080 is already listening from a previous/crashed process
+  const portInUse = await isPortAlreadyListening();
+  if (portInUse) {
+    console.log('[TUNNEL] Port %d already in use — reusing existing SOCKS5 proxy at %s:%d', SOCKS_PORT, SOCKS_HOST, SOCKS_PORT);
+    tunnelOpen = true;
     return;
   }
 
