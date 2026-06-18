@@ -716,7 +716,7 @@ async function runBatch(urlList, label) {
   // ── Proxy context (chính) ──────────────────────────────────────
   let contextProxy = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
     ignoreDefaultArgs: ['--enable-automation'],
     args: [
       '--start-maximized',
@@ -768,7 +768,7 @@ async function runBatch(urlList, label) {
     console.log('[SOCKS] Tạo context mới...');
     contextProxy = await chromium.launchPersistentContext(userDataDir, {
       headless: false,
-      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
       ignoreDefaultArgs: ['--enable-automation'],
       args: [
         '--start-maximized',
