@@ -55,7 +55,6 @@ const CONFIG = {
   MANUAL_WARMUP_URL: '',
   MANUAL_WARMUP_WAIT_MS: 90_000,
   RETRY_MAX_ATTEMPTS: 5, // Giới hạn số lần retry link chết trong 1 session
-  NOTIFY_CHANNEL:       process.env.NOTIFY_CHANNEL || 'webhook',
   EMAIL_NOTIFY_FAILURE_THRESHOLD:   parseInt(process.env.EMAIL_NOTIFY_FAILURE_THRESHOLD || '3', 10),
   EMAIL_NOTIFY_REPEAT_EVERY_FAILURES: parseInt(process.env.EMAIL_NOTIFY_REPEAT_EVERY_FAILURES || '6', 10),
   EMAIL_NOTIFY_RECOVERY:  process.env.EMAIL_NOTIFY_RECOVERY !== 'false',
@@ -64,9 +63,6 @@ const CONFIG = {
   ERROR_LOG_MAX_BYTES:   parseInt(process.env.ERROR_LOG_MAX_BYTES || String(1048576), 10),
   FAILURE_STATE_FILE:    'failure-state.json',
   DRY_RUN:               false, // set true via CLI --dry-run before env validation
-  // Webhook config — read from env directly so notifier uses correct URL/secret
-  WEBHOOK_URL:    process.env.WEBHOOK_URL    || '',
-  MONITOR_SECRET: process.env.MONITOR_SECRET || '',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
