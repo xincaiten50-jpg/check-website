@@ -94,5 +94,6 @@ understand repo → plan → spike (nếu cần) → edit nhỏ → test/build �
 
 ## Risks / Blockers
 - SSH tunnel phụ thuộc vào server 36.134.139.96 — có thể fail nếu server down
+- SSH tunnel dùng **public-key auth** (`SSH_KEY_PATH`) — cần private key ở máy dev và public key ở `~/.ssh/authorized_keys` trên server
 - SOCKS proxy port 1080 — cần kill process cũ trước khi chạy mới
 - Telegram notification phụ thuộc vào .env config (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) — không có trong repo
