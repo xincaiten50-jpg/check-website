@@ -689,6 +689,45 @@ async function runPool(tasks, concurrency) {
   return results;
 }
 
+// ─── BROWSER CONTEXT (dùng chung cho batch và reconnect) ────────────────────
+async function createBrowserContext(userDataDir) {
+  const ctx = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: [
+      '--start-maximized',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+    ],
+    viewport: null,
+    proxy: { server: 'socks5://127.0.0.1:1080' },
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  });
+
+  // Anti-detect: ẩn webdriver, giả mạo permissions/plugins/languages/chrome
+  await ctx.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
+    window.chrome = { runtime: {} };
+  });
+
+  if (CONFIG.BLOCK_ASSETS) {
+    await ctx.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
+  }
+
+  return ctx;
+}
+
 // ─── KIỂM TRA 1 BATCH LINK (mở browser riêng) ───────────────────────────────
 async function runBatch(urlList, label) {
   console.log(`\n${"═".repeat(52)}`);
@@ -709,48 +748,8 @@ async function runBatch(urlList, label) {
   const userDataDir = path.join(__dirname, 'edge_user_data');
 
   // ── Proxy context (chính) ──────────────────────────────────────
-  let contextProxy = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      '--start-maximized',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-    ],
-    viewport: null,
-    proxy: { server: 'socks5://127.0.0.1:1080' },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  });
+  let contextProxy = await createBrowserContext(userDataDir);
   sharedBrowserContext = contextProxy;
-
-  // ── Anti-detect: giảm fingerprint webdriver + các cờ anti-bot ───────────────
-  await contextProxy.addInitScript(() => {
-    // Ẩn navigator.webdriver
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    // Giả mạo permissions API
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-    // Giả mạo plugins
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    // Giả mạo languages
-    Object.defineProperty(navigator, 'languages', {
-      get: () => ['zh-CN', 'zh', 'en-US', 'en'],
-    });
-    // Xóa cờ chrome runtime
-    window.chrome = { runtime: {} };
-  });
-  if (CONFIG.BLOCK_ASSETS) {
-    await contextProxy.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
-  }
 
   // ── reconnectTunnel: close → reopen tunnel → new context ──────────────────────────────
   async function reconnectTunnel() {
@@ -761,37 +760,8 @@ async function runBatch(urlList, label) {
     console.log('[SOCKS] Mở lại tunnel...');
     await openTunnel();
     console.log('[SOCKS] Tạo context mới...');
-    contextProxy = await chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--start-maximized',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-features=IsolateOrigins,site-per-process',
-      ],
-      viewport: null,
-      proxy: { server: 'socks5://127.0.0.1:1080' },
-      userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
+    contextProxy = await createBrowserContext(userDataDir);
     sharedBrowserContext = contextProxy;
-    await contextProxy.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      const originalQuery = window.navigator.permissions.query;
-      window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications' ?
-          Promise.resolve({ state: Notification.permission }) :
-          originalQuery(parameters)
-      );
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
-      window.chrome = { runtime: {} };
-    });
-    if (CONFIG.BLOCK_ASSETS) {
-      await contextProxy.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
-    }
     console.log('[SOCKS] Context mới đã sẵn sởng.');
     return { context: contextProxy };
   }
