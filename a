@@ -1,0 +1,649 @@
+const { chromium } = require('playwright');
+const fs   = require('fs');
+const path = require('path');
+const https = require('https');
+
+// ─── CẤU HÌNH ────────────────────────────────────────────────────────────────
+const CONFIG = {
+  TIMEOUT_TOTAL_MS: 200 * 60 * 1000,  // Tổng thời gian tối đa
+  TIMEOUT_PAGE_MS:  70_000,          // Timeout mỗi trang
+  CONCURRENCY:      1,               // Nên để 1 khi site có anti-bot mạnh
+  RETRY_MAX:        6,               // Số lần thử lại khi lỗi
+  DELAY_MIN_MS:     8000,            // Delay tối thiểu giữa các request
+  DELAY_MAX_MS:     15000,           // Delay tối đa giữa các request
+  MIN_BODY_LENGTH:  25,              // Số ký tự tối thiểu để coi trang còn sống
+  INPUT_FILE:       'links.txt',
+  OUTPUT_FILE:      'results.json',
+  LOG_FILE:         'errors.log',
+  TIMEZONE:         'Asia/Ho_Chi_Minh',
+  SCHEDULE_HOURS:   [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23], // Mỗi 2 giờ, bắt đầu từ 1h (giờ VN)
+  SCHEDULE_MINUTE:  0,
+  RETRY_DEAD_MS:    1 * 60 * 1000,        // Chờ 1 phút rồi tra lại link chết
+  HUMAN_LIKE_MODE:  true,
+  HUMAN_ACTION_MIN_MS: 700,
+  HUMAN_ACTION_MAX_MS: 1800,
+  NAVIGATION_WAIT_UNTIL: 'load',
+  BLOCK_ASSETS: false, // true nếu muốn tiết kiệm băng thông, false để giống user thật hơn
+  STRICT_DOMAIN_MATCH: false, // false: redirect khác domain vẫn có thể tính thành công
+  SUSPICIOUS_TEXT_THRESHOLD: 99, // tăng cao để không fail vì nội dung quảng cáo/portal
+  SUSPICIOUS_TEXT_MARKERS: [
+    '广告',
+    'sponsored',
+    'recommended for you',
+    'popular searches',
+    'trending searches',
+    'search now',
+    '立即查看',
+    '搜一搜',
+    '大家都在搜',
+  ],
+  // Warm-up thủ công: mở 1 URL để bạn tự login/solve captcha rồi dùng lại profile
+  MANUAL_WARMUP_URL: '',
+  MANUAL_WARMUP_WAIT_MS: 90_000,
+  // ── WeCom (企业微信) ────────────────────────────────────────────────────────────
+  WECOM_WEBHOOK: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=d268b3f9-4e4a-46f1-811b-07f77463455c',
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const randDelay = () =>
+  sleep(CONFIG.DELAY_MIN_MS + Math.random() * (CONFIG.DELAY_MAX_MS - CONFIG.DELAY_MIN_MS));
+
+const cycleTracker = {
+  cycleKey: null,
+  unresolvedByUrl: new Map(),
+};
+
+function nowLocal() {
+  return new Date().toLocaleString('vi-VN', {
+    hour12: false,
+    timeZone: CONFIG.TIMEZONE,
+  });
+}
+
+function getTimeInTimezone(date = new Date()) {
+  const dtf = new Intl.DateTimeFormat('en-CA', {
+    timeZone: CONFIG.TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  const parts = dtf.formatToParts(date).reduce((acc, p) => {
+    if (p.type !== 'literal') acc[p.type] = p.value;
+    return acc;
+  }, {});
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+function toUtcMsFromTimezoneParts(parts) {
+  return Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+    0,
+  );
+}
+
+function formatWaitTime(minutes) {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours === 0) return `${mins} phút`;
+  if (mins === 0) return `${hours} giờ`;
+  return `${hours} giờ ${mins} phút`;
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+function formatDateKey(parts) {
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+}
+
+function shiftDateParts(parts, dayOffset) {
+  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + dayOffset));
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+  };
+}
+
+function getCycleKeyForTriggerHour(triggerHour, nowParts) {
+  const cycleStartDate = triggerHour >= 19 ? nowParts : shiftDateParts(nowParts, -1);
+  return formatDateKey(cycleStartDate);
+}
+
+function updateCycleTracker(triggerHour, results) {
+  if (typeof triggerHour !== 'number') return;
+
+  const nowParts = getTimeInTimezone(new Date());
+  const nextCycleKey = getCycleKeyForTriggerHour(triggerHour, nowParts);
+
+  if (cycleTracker.cycleKey !== nextCycleKey) {
+    cycleTracker.cycleKey = nextCycleKey;
+    cycleTracker.unresolvedByUrl.clear();
+  }
+
+  for (const r of results) {
+    if (!r.ok) {
+      if (!cycleTracker.unresolvedByUrl.has(r.url)) {
+        cycleTracker.unresolvedByUrl.set(r.url, {
+          firstBadHour: triggerHour,
+          firstBadAt: nowLocal(),
+          reason: r.reason ?? 'Unknown',
+        });
+      }
+      continue;
+    }
+
+    if (cycleTracker.unresolvedByUrl.has(r.url)) {
+      cycleTracker.unresolvedByUrl.delete(r.url);
+    }
+  }
+}
+
+function buildCycleDailyReport(triggerHour) {
+  if (triggerHour !== 17) return null;
+
+  if (cycleTracker.unresolvedByUrl.size === 0) {
+    return {
+      normal: true,
+      message: `✅ Mọi thứ bình thường (${nowLocal()})\nChu kỳ: 19:00 -> 17:00 hôm sau`,
+    };
+  }
+
+  const unresolved = Array.from(cycleTracker.unresolvedByUrl.entries());
+  const firstBadHour = unresolved.reduce((min, [, info]) => Math.min(min, info.firstBadHour), 23);
+
+  let message = '⚠️ Không bình thường trong chu kỳ 19:00 -> 17:00 hôm sau\n';
+  message += `🕐 Khung giờ bắt đầu không bình thường: ${pad2(firstBadHour)}:00\n`;
+  message += `❌ Link còn không bình thường đến cuối phiên 17:00: ${unresolved.length}\n`;
+  for (const [url, info] of unresolved) {
+    message += `• ${url} — từ ${pad2(info.firstBadHour)}:00 — ${info.reason}\n`;
+  }
+  message += `⏱️ Chốt phiên: ${nowLocal()}`;
+
+  return { normal: false, message };
+}
+
+// ─── GỬI WECOM ───────────────────────────────────────────────────────────
+async function sendWecom(text) {
+  const webhookUrl = CONFIG.WECOM_WEBHOOK;
+  if (!webhookUrl) return;
+  // WeCom không hỗ trợ HTML → xóa tag
+  const plain = text.replace(/<[^>]+>/g, '');
+  const body  = JSON.stringify({ msgtype: 'text', text: { content: plain } });
+  return new Promise((resolve) => {
+    const u   = new URL(webhookUrl);
+    const req = https.request({
+      hostname: u.hostname,
+      path:     u.pathname + u.search,
+      method:   'POST',
+      headers:  { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => { res.resume(); resolve(); });
+    req.on('error', (e) => { console.error('WeCom lỗi:', e.message); resolve(); });
+    req.write(body);
+    req.end();
+  });
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
+function logError(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  process.stderr.write(line);
+  fs.appendFileSync(CONFIG.LOG_FILE, line);
+}
+
+function randomBetween(min, max) {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+async function humanPause() {
+  const ms = randomBetween(CONFIG.HUMAN_ACTION_MIN_MS, CONFIG.HUMAN_ACTION_MAX_MS);
+  await sleep(ms);
+}
+
+async function mimicHumanBehavior(page) {
+  if (!CONFIG.HUMAN_LIKE_MODE) return;
+
+  const metrics = await page.evaluate(() => ({
+    width: window.innerWidth || 1366,
+    height: window.innerHeight || 768,
+    scrollHeight: document.body?.scrollHeight || document.documentElement?.scrollHeight || 2000,
+  }));
+
+  const startX = randomBetween(100, Math.max(120, metrics.width - 100));
+  const startY = randomBetween(80, Math.max(100, metrics.height - 120));
+  await page.mouse.move(startX, startY, { steps: randomBetween(10, 24) });
+  await humanPause();
+
+  await page.mouse.wheel(0, randomBetween(200, 600));
+  await humanPause();
+
+  const targetY = Math.min(metrics.scrollHeight - 1, randomBetween(400, 1200));
+  await page.evaluate((y) => window.scrollTo({ top: y, behavior: 'smooth' }), targetY);
+  await humanPause();
+}
+
+async function detectBotChallenge(page) {
+  const text = await page.evaluate(() => {
+    const title = (document.title || '').toLowerCase();
+    const body = (document.body?.innerText || '').slice(0, 5000).toLowerCase();
+    return `${title}\n${body}`;
+  });
+
+  const markers = [
+    'verify you are human',
+    'captcha',
+    'attention required',
+    'cloudflare',
+    'access denied',
+    'robot',
+  ];
+
+  return markers.find((m) => text.includes(m)) ?? null;
+}
+
+function toHostnameSafe(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function getNaiveRootDomain(hostname) {
+  const parts = String(hostname || '').split('.').filter(Boolean);
+  if (parts.length <= 2) return parts.join('.');
+  return parts.slice(-2).join('.');
+}
+
+function isCrossDomainRedirect(originalUrl, finalUrl) {
+  const originalHost = toHostnameSafe(originalUrl);
+  const finalHost = toHostnameSafe(finalUrl);
+  if (!originalHost || !finalHost) return false;
+  if (originalHost === finalHost) return false;
+
+  const rootA = getNaiveRootDomain(originalHost);
+  const rootB = getNaiveRootDomain(finalHost);
+  return rootA !== rootB;
+}
+
+function countSuspiciousMarkers(text) {
+  const source = String(text || '').toLowerCase();
+  return CONFIG.SUSPICIOUS_TEXT_MARKERS.reduce((count, marker) => {
+    return source.includes(marker.toLowerCase()) ? count + 1 : count;
+  }, 0);
+}
+
+// ─── TẠO OBJECT KẾT QUẢ ─────────────────────────────────────────────────────
+function makeResult(url, ok, status, reason, finalUrl, title) {
+  const result = {
+    url,
+    ok,
+    status:    status ?? null,
+    reason:    ok ? null : (reason ?? null),
+    finalUrl:  finalUrl && finalUrl !== url ? finalUrl : null,
+    title:     title ?? null,
+    timestamp: new Date().toISOString(),
+  };
+  if (!ok) console.log(`❌ [${status ?? '???'}] [${nowLocal()}] ${url} — ${reason}`);
+  return result;
+}
+
+// ─── KIỂM TRA 1 LINK (3 LỚP) ─────────────────────────────────────────────────
+async function checkLink(context, url) {
+  let lastErr;
+
+  for (let attempt = 1; attempt <= CONFIG.RETRY_MAX + 1; attempt++) {
+    const page = await context.newPage();
+    try {
+
+      // ── Lớp 0: URL có hợp lệ không ─────────────────────────────────────
+      let parsedUrl;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        return makeResult(url, false, null, 'URL không hợp lệ');
+      }
+
+      // ── Lớp 1: HTTP Status ──────────────────────────────────────────────
+      const response = await page.goto(url, {
+        waitUntil: CONFIG.NAVIGATION_WAIT_UNTIL,
+        timeout: CONFIG.TIMEOUT_PAGE_MS,
+      });
+
+      const status = response?.status() ?? null;
+      if (!response || status >= 400) {
+        return makeResult(url, false, status, `HTTP ${status}`);
+      }
+
+      // Chờ JS render và mô phỏng vài hành động tự nhiên
+      await page.waitForTimeout(randomBetween(1800, 3200));
+      await mimicHumanBehavior(page);
+
+      const challenge = await detectBotChallenge(page);
+      if (challenge) {
+        return makeResult(url, false, status, `Bị anti-bot/challenge (${challenge})`, page.url());
+      }
+
+      // ── Lớp 2: Kiểm tra nội dung trang ──────────────────────────────────
+      // (Redirect sang domain khác vẫn OK nếu trang có nội dung)
+      const finalUrl = page.url();
+      if (!finalUrl || finalUrl === 'about:blank') {
+        return makeResult(url, false, status, 'Không lấy được URL đích hợp lệ', finalUrl);
+      }
+
+      if (CONFIG.STRICT_DOMAIN_MATCH && isCrossDomainRedirect(url, finalUrl)) {
+        return makeResult(url, false, status, `Redirect khác domain: ${finalUrl}`, finalUrl);
+      }
+
+      const bodyText = await page.evaluate(() => document.body?.innerText ?? '');
+      const isEmpty  = !bodyText || bodyText.trim().length < CONFIG.MIN_BODY_LENGTH;
+
+      if (isEmpty) {
+        return makeResult(url, false, status, 'Trang trống hoặc nội dung quá ít', finalUrl);
+      }
+
+      const title = await page.title();
+      const suspiciousScore = countSuspiciousMarkers(`${title}\n${bodyText.slice(0, 6000)}`);
+      if (suspiciousScore >= CONFIG.SUSPICIOUS_TEXT_THRESHOLD) {
+        return makeResult(url, false, status, `Nội dung nghi ngờ (điểm=${suspiciousScore})`, finalUrl, title);
+      }
+
+      // ── Tất cả lớp đều qua → link SỐNG ──────────────────────────────────
+      console.log(`✅ [${status}] [${nowLocal()}] ${url} — "${title}"`);
+      return makeResult(url, true, status, null, finalUrl, title);
+
+    } catch (err) {
+      lastErr = err;
+      console.warn(`⚠️  Lần ${attempt} thất bại [${nowLocal()}]: ${url} — ${err.message}`);
+      if (attempt <= CONFIG.RETRY_MAX) await sleep(2000 * attempt);
+    } finally {
+      await page.close().catch(() => {});
+    }
+  }
+
+  logError(`FAILED ${url}: ${lastErr?.message}`);
+  return makeResult(url, false, null, lastErr?.message ?? 'Unknown error');
+}
+
+// ─── CONCURRENCY POOL ────────────────────────────────────────────────────────
+async function runPool(tasks, concurrency) {
+  const results = [];
+  const queue   = [...tasks];
+
+  async function worker() {
+    while (queue.length) {
+      const task = queue.shift();
+      results.push(await task());
+      if (queue.length) await randDelay();
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, worker));
+  return results;
+}
+
+// ─── KIỂM TRA 1 BATCH LINK (mở browser riêng) ───────────────────────────────
+async function runBatch(urlList, label) {
+  console.log(`\n${'═'.repeat(52)}`);
+  console.log(`🕐 ${label} — Bắt đầu lúc: ${nowLocal()}`);
+  console.log(`${'═'.repeat(52)}\n`);
+  console.log(`📋 Số link cần tra: ${urlList.length} | Concurrency: ${CONFIG.CONCURRENCY}\n`);
+
+  const userDataDir = path.join(__dirname, 'edge_user_data');
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: ['--start-maximized'],
+    viewport: null,
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  });
+
+  // Giảm fingerprint webdriver ở mức cơ bản.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+  });
+
+  const killTimer = setTimeout(async () => {
+    console.log('\n⛔ Hết thời gian tối đa, đóng trình duyệt...');
+    await context.close();
+  }, CONFIG.TIMEOUT_TOTAL_MS);
+
+  if (CONFIG.BLOCK_ASSETS) {
+    await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
+  }
+
+  if (CONFIG.MANUAL_WARMUP_URL) {
+    const warmupPage = await context.newPage();
+    console.log(`🧩 Warm-up thủ công: ${CONFIG.MANUAL_WARMUP_URL}`);
+    console.log(`⏱️ Bạn có ${Math.round(CONFIG.MANUAL_WARMUP_WAIT_MS / 1000)} giây để login/solve challenge...`);
+    try {
+      await warmupPage.goto(CONFIG.MANUAL_WARMUP_URL, {
+        waitUntil: CONFIG.NAVIGATION_WAIT_UNTIL,
+        timeout: CONFIG.TIMEOUT_PAGE_MS,
+      });
+      await sleep(CONFIG.MANUAL_WARMUP_WAIT_MS);
+    } catch (e) {
+      console.warn(`⚠️ Warm-up lỗi: ${e.message}`);
+    } finally {
+      await warmupPage.close().catch(() => {});
+    }
+  }
+
+  let results;
+  try {
+    const tasks = urlList.map((url) => () => checkLink(context, url));
+    results = await runPool(tasks, CONFIG.CONCURRENCY);
+  } finally {
+    clearTimeout(killTimer);
+    await context.close();
+  }
+  return results;
+}
+
+// ─── SESSION: tra toàn bộ + retry link chết mỗi 2 phút ───────────────────────
+async function runSession(sessionNum, triggerHour) {
+  if (!fs.existsSync(CONFIG.INPUT_FILE)) {
+    console.error(`❌ Không tìm thấy file "${CONFIG.INPUT_FILE}"`);
+    process.exit(1);
+  }
+
+  const allLinks = fs.readFileSync(CONFIG.INPUT_FILE, 'utf-8')
+    .split('\n').map((l) => l.trim()).filter(Boolean);
+
+  // ── Lần tra đầu tiên ────────────────────────────────────────────────────
+  let results = await runBatch(allLinks, `Phiên #${sessionNum} — Lần tra chính`);
+  fs.writeFileSync(CONFIG.OUTPUT_FILE, JSON.stringify(results, null, 2), 'utf-8');
+
+  let alive = results.filter((r) => r.ok);
+  let dead  = results.filter((r) => !r.ok);
+  const isDailyReportSlot = triggerHour === 17;
+
+  // In & gửi Telegram tổng kết lần đầu
+  const summary1 = buildSummary(results, `Phiên #${sessionNum} — Lần tra chính`, allLinks.length);
+  console.log(summary1.console);
+  if (dead.length > 0) {
+    await sendWecom(summary1.telegram);
+  }
+
+  // ── Retry loop ───────────────────────────────────────────────────────────
+  let retryNum = 0;
+  while (dead.length > 0) {
+    retryNum++;
+    const retryMins = CONFIG.RETRY_DEAD_MS / 60_000;
+    console.log(`\n⏳ Còn ${dead.length} link chết — chờ ${retryMins} phút rồi tra lại... (${nowLocal()})`);
+    await sendWecom(`⏳ Còn ${dead.length} link chết. Sẽ tra lại sau ${retryMins} phút...`);
+    await sleep(CONFIG.RETRY_DEAD_MS);
+
+    const deadUrls   = dead.map((r) => r.url);
+    const retryRes   = await runBatch(deadUrls, `Phiên #${sessionNum} — Retry #${retryNum}`);
+
+    // Cập nhật vào kết quả tổng
+    for (const r of retryRes) {
+      const idx = results.findIndex((x) => x.url === r.url);
+      if (idx !== -1) results[idx] = r;
+    }
+    fs.writeFileSync(CONFIG.OUTPUT_FILE, JSON.stringify(results, null, 2), 'utf-8');
+
+    alive = results.filter((r) => r.ok);
+    dead  = results.filter((r) => !r.ok);
+
+    const summaryR = buildSummary(results, `Phiên #${sessionNum} — Retry #${retryNum}`, allLinks.length);
+    console.log(summaryR.console);
+    await sendWecom(summaryR.telegram);
+  }
+
+  if (retryNum > 0) {
+    const msg = `🎉 Tất cả <b>${allLinks.length}</b> link đã vào được sau ${retryNum} lần retry! (${nowLocal()})`;
+    console.log(`\n🎉 Tất cả link đã sống sau ${retryNum} lần retry!`);
+    await sendWecom(msg);
+  }
+
+  updateCycleTracker(triggerHour, results);
+
+  if (isDailyReportSlot) {
+    const dailyReport = buildCycleDailyReport(triggerHour);
+    if (dailyReport) {
+      console.log(`\n🧾 Báo cáo chu kỳ: ${dailyReport.normal ? 'BÌNH THƯỜNG' : 'KHÔNG BÌNH THƯỜNG'}`);
+      await sendWecom(dailyReport.message);
+    }
+  }
+}
+
+// ─── BUILD SUMMARY TEXT ──────────────────────────────────────────────────────
+function buildSummary(results, label, total) {
+  const alive   = results.filter((r) => r.ok);
+  const dead    = results.filter((r) => !r.ok);
+  const reasons = dead.reduce((acc, r) => {
+    const key = r.reason ?? 'Unknown';
+    acc[key]  = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  // Console
+  let con = '\n──────────────────────────────────────────────────\n';
+  con    += `📊 ${label}\n`;
+  con    += `   Tổng: ${results.length}/${total} | ✅ Sống: ${alive.length} | ❌ Chết: ${dead.length}\n`;
+  if (dead.length) {
+    con += '   Link chết:\n';
+    for (const r of dead) con += `   • ${r.url}\n`;
+  }
+  con += `🏁 Kết thúc lúc: ${nowLocal()}\n`;
+  con += '──────────────────────────────────────────────────';
+
+  // Telegram
+  let tg = `📊 <b>${label}</b>\n`;
+  tg    += `🕐 ${nowLocal()}\n`;
+  tg    += `✅ Vào được: <b>${alive.length}</b> / ${total}\n`;
+  tg    += `❌ Không vào được: <b>${dead.length}</b> / ${total}\n`;
+  if (dead.length) {
+    tg += '\n<b>Link chết:</b>\n';
+    for (const r of dead) tg += `• ${r.url} — ${r.reason ?? '???'}\n`;
+  }
+  if (Object.keys(reasons).length) {
+    tg += '\n<b>Lý do:</b>\n';
+    for (const [reason, count] of Object.entries(reasons)) tg += `• ${reason}: ${count}\n`;
+  }
+
+  return { console: con, telegram: tg };
+}
+
+// Tính số ms từ hiện tại (giờ VN) đến lần tra tiếp theo theo khung giờ cấu hình
+function msUntilNext(hours, minute) {
+  const nowParts = getTimeInTimezone(new Date());
+  const nowMs = toUtcMsFromTimezoneParts(nowParts);
+  const sorted = [...hours].sort((a, b) => a - b);
+
+  for (const h of sorted) {
+    const targetMs = Date.UTC(
+      nowParts.year,
+      nowParts.month - 1,
+      nowParts.day,
+      h,
+      minute,
+      0,
+      0,
+    );
+    const diff = targetMs - nowMs;
+    if (diff > 0) return { ms: diff, hour: h };
+  }
+
+  // Không còn khung giờ nào hôm nay → chờ đến giờ đầu tiên ngày mai
+  const tomorrowMs = Date.UTC(
+    nowParts.year,
+    nowParts.month - 1,
+    nowParts.day + 1,
+    sorted[0],
+    minute,
+    0,
+    0,
+  );
+  return { ms: tomorrowMs - nowMs, hour: sorted[0] };
+}
+
+(async () => {
+  const hours    = CONFIG.SCHEDULE_HOURS;
+  const minute   = CONFIG.SCHEDULE_MINUTE;
+  const hoursStr = hours.map((h) => `${String(h).padStart(2, '0')}:${String(minute).padStart(2, '0')}`).join(', ');
+  console.log(`⏰ Chương trình chạy theo giờ VN (${CONFIG.TIMEZONE}): ${hoursStr}`);
+  console.log('📌 Chỉ gửi "mọi thứ bình thường" 1 lần vào phiên 17:00 (chu kỳ 19:00 -> 17:00 hôm sau).');
+
+  let session = 0;
+
+  async function scheduleNext() {
+    const { ms, hour } = msUntilNext(hours, minute);
+    const waitMin = Math.round(ms / 60_000);
+    const waitTime = formatWaitTime(waitMin);
+    console.log(`\n⏳ Đang chờ... Phiên tiếp theo lúc ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} giờ VN (còn ~${waitTime}) — ${nowLocal()}`);
+    setTimeout(async () => {
+      session++;
+      await runSession(session, hour);
+      scheduleNext();
+    }, ms);
+  }
+
+  // Nếu không có khung giờ nào → chạy ngay lập tức 1 lần
+  if (hours.length === 0) {
+    // Test WeCom khi khởi động
+    if (CONFIG.WECOM_WEBHOOK) {
+      console.log('📤 Đang test WeCom...');
+      await sendWecom('👋 Chương trình đã khởi động! Sắp bắt đầu tra web...');
+      console.log('✅ WeCom test đã gửi (kiểm tra WeCom của bạn)');
+    }
+    session++;
+    await runSession(session, null);
+    return;
+  }
+
+  // Nếu đang đúng khung giờ VN thì tra ngay
+  const vnNow = getTimeInTimezone(new Date());
+  if (hours.includes(vnNow.hour) && vnNow.minute === minute) {
+    session++;
+    await runSession(session, vnNow.hour);
+  }
+
+  scheduleNext();
+})();

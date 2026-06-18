@@ -1,0 +1,6 @@
+.env
+node_modules/
+edge_user_data/
+*.log
+results.json
+check-website-docker.tar
