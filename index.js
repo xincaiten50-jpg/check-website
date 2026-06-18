@@ -35,6 +35,14 @@ const CONFIG = {
   FAIL_IF_CLOSE_SEARCH_BARS: true,
   SUCCESS_IF_NOT_CLOSE_SEARCH_BARS: false, // false: không gần nhau vẫn phải kiểm tra body text
   SEARCH_BAR_DEBUG: false,
+  // Search-bar detection thresholds (heuristic for sm.cn portal layout):
+  //   220px min-width: matches portal's standard search input width, ignores
+  //     footer/sidebar inputs
+  //   420px top region: only consider inputs in the top header area, ignoring
+  //     mid-page search widgets
+  //   95px max vertical gap: two search inputs stacked within this distance
+  //     indicate an empty/portal page (the legitimate page has a single search
+  //     bar); see detectCloseSearchBars() at line ~382
   SEARCH_BAR_MIN_WIDTH_PX: 220,
   SEARCH_BAR_TOP_REGION_PX: 420,
   SEARCH_BAR_MAX_VERTICAL_GAP_PX: 95, // 2 thanh tìm kiếm quá gần nhau thì coi là fail
@@ -173,6 +181,13 @@ function shiftDateParts(parts, dayOffset) {
   };
 }
 
+// Cycle key for the daily cycle tracker. A cycle runs from 19:00 VN on day X
+// to 17:00 VN on day X+1. So the cycle "started" on day Y if:
+//   - triggerHour >= 19 (we're in the 19:00..23:59 window of day Y), OR
+//   - triggerHour < 19 and we're past midnight — the cycle actually started
+//     yesterday at 19:00, so we use yesterday's date as the key.
+// This ensures updateCycleTracker() doesn't reset state for sessions that
+// are all part of the same monitoring cycle.
 function getCycleKeyForTriggerHour(triggerHour, nowParts) {
   const cycleStartDate = triggerHour >= 19 ? nowParts : shiftDateParts(nowParts, -1);
   return formatDateKey(cycleStartDate);
