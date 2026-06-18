@@ -1,9 +1,9 @@
 # VIBE_CODING_WORKFLOW — check-website
 
 ## Stack
-- **Runtime**: Node.js (ES modules)
+- **Runtime**: Node.js (CommonJS)
 - **Package Manager**: npm
-- **Key Dependencies**: playwright, ssh2, nodemailer, dotenv
+- **Key Dependencies**: playwright, ssh2, dotenv
 - **Main Entry**: `index.js`
 
 ## Test / Build / Lint Commands
@@ -15,10 +15,9 @@
 | `npm run test:log` | Test log rotation |
 | `npm run test:schedule` | Test scheduling |
 | `npm run test:normal` | Test daily normal report |
-| `npm run test:email` | Test email sending |
 | `npm run test:all` | Chạy tất cả tests trên |
-| `node index.js` | Chạy check thật (gửi webhook) |
-| `node index.js --dry-run` | Chạy mô phỏng, không gửi webhook |
+| `node index.js` | Chạy check thật (gửi Telegram) |
+| `node index.js --dry-run` | Chạy mô phỏng, không gửi Telegram |
 
 ## When To Use What
 
@@ -84,7 +83,7 @@ understand repo → plan → spike (nếu cần) → edit nhỏ → test/build �
 
 ### Cần Research
 1. Dùng web_search/web_fetch để tra cứu
-2. Kiểm tra docs của playwright, ssh2, nodemailer
+2. Kiểm tra docs của playwright, ssh2
 3. Không cài package mới khi chưa cần
 
 ## Skills Available (Platform)
@@ -96,4 +95,4 @@ understand repo → plan → spike (nếu cần) → edit nhỏ → test/build �
 ## Risks / Blockers
 - SSH tunnel phụ thuộc vào server 36.134.139.96 — có thể fail nếu server down
 - SOCKS proxy port 1080 — cần kill process cũ trước khi chạy mới
-- Email/Telegram webhook phụ thuộc vào .env config — không có trong repo
+- Telegram notification phụ thuộc vào .env config (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID) — không có trong repo
