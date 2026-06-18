@@ -2,7 +2,6 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "https-proxy-agent": "^5.0.1",
-    "nodemailer": "^6.9.8",
     "playwright": "^1.57.0",
     "socks": "^2.8.9",
     "socks-proxy-agent": "^6.2.1",
@@ -13,7 +12,6 @@
     "test:log": "node test-log-rotation.js",
     "test:schedule": "node test-schedule.js",
     "test:normal": "node test-normal-daily.js",
-    "test:email": "node test-email.js",
     "check:syntax": "node --check index.js",
     "test:all": "npm run check:syntax && npm run test:threshold && npm run test:log && npm run test:schedule && npm run test:normal"
   }

@@ -46,7 +46,7 @@ USER appuser
 
 ENV NODE_ENV=production
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Default: run scheduled mode
 CMD ["node", "index.js", "--scheduled"]

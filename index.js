@@ -35,6 +35,14 @@ const CONFIG = {
   FAIL_IF_CLOSE_SEARCH_BARS: true,
   SUCCESS_IF_NOT_CLOSE_SEARCH_BARS: false, // false: không gần nhau vẫn phải kiểm tra body text
   SEARCH_BAR_DEBUG: false,
+  // Search-bar detection thresholds (heuristic for sm.cn portal layout):
+  //   220px min-width: matches portal's standard search input width, ignores
+  //     footer/sidebar inputs
+  //   420px top region: only consider inputs in the top header area, ignoring
+  //     mid-page search widgets
+  //   95px max vertical gap: two search inputs stacked within this distance
+  //     indicate an empty/portal page (the legitimate page has a single search
+  //     bar); see detectCloseSearchBars() at line ~382
   SEARCH_BAR_MIN_WIDTH_PX: 220,
   SEARCH_BAR_TOP_REGION_PX: 420,
   SEARCH_BAR_MAX_VERTICAL_GAP_PX: 95, // 2 thanh tìm kiếm quá gần nhau thì coi là fail
@@ -55,7 +63,6 @@ const CONFIG = {
   MANUAL_WARMUP_URL: '',
   MANUAL_WARMUP_WAIT_MS: 90_000,
   RETRY_MAX_ATTEMPTS: 5, // Giới hạn số lần retry link chết trong 1 session
-  NOTIFY_CHANNEL:       process.env.NOTIFY_CHANNEL || 'webhook',
   EMAIL_NOTIFY_FAILURE_THRESHOLD:   parseInt(process.env.EMAIL_NOTIFY_FAILURE_THRESHOLD || '3', 10),
   EMAIL_NOTIFY_REPEAT_EVERY_FAILURES: parseInt(process.env.EMAIL_NOTIFY_REPEAT_EVERY_FAILURES || '6', 10),
   EMAIL_NOTIFY_RECOVERY:  process.env.EMAIL_NOTIFY_RECOVERY !== 'false',
@@ -64,9 +71,6 @@ const CONFIG = {
   ERROR_LOG_MAX_BYTES:   parseInt(process.env.ERROR_LOG_MAX_BYTES || String(1048576), 10),
   FAILURE_STATE_FILE:    'failure-state.json',
   DRY_RUN:               false, // set true via CLI --dry-run before env validation
-  // Webhook config — read from env directly so notifier uses correct URL/secret
-  WEBHOOK_URL:    process.env.WEBHOOK_URL    || '',
-  MONITOR_SECRET: process.env.MONITOR_SECRET || '',
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,7 +100,6 @@ const cycleTracker = {
 
 // Shared browser context for graceful shutdown
 let sharedBrowserContext = null;
-let sharedBrowserContextDirect = null;
 
 function nowLocal() {
   return new Date().toLocaleString('vi-VN', {
@@ -178,6 +181,13 @@ function shiftDateParts(parts, dayOffset) {
   };
 }
 
+// Cycle key for the daily cycle tracker. A cycle runs from 19:00 VN on day X
+// to 17:00 VN on day X+1. So the cycle "started" on day Y if:
+//   - triggerHour >= 19 (we're in the 19:00..23:59 window of day Y), OR
+//   - triggerHour < 19 and we're past midnight — the cycle actually started
+//     yesterday at 19:00, so we use yesterday's date as the key.
+// This ensures updateCycleTracker() doesn't reset state for sessions that
+// are all part of the same monitoring cycle.
 function getCycleKeyForTriggerHour(triggerHour, nowParts) {
   const cycleStartDate = triggerHour >= 19 ? nowParts : shiftDateParts(nowParts, -1);
   return formatDateKey(cycleStartDate);
@@ -694,6 +704,45 @@ async function runPool(tasks, concurrency) {
   return results;
 }
 
+// ─── BROWSER CONTEXT (dùng chung cho batch và reconnect) ────────────────────
+async function createBrowserContext(userDataDir) {
+  const ctx = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: [
+      '--start-maximized',
+      '--disable-blink-features=AutomationControlled',
+      '--disable-features=IsolateOrigins,site-per-process',
+    ],
+    viewport: null,
+    proxy: { server: 'socks5://127.0.0.1:1080' },
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  });
+
+  // Anti-detect: ẩn webdriver, giả mạo permissions/plugins/languages/chrome
+  await ctx.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
+    window.chrome = { runtime: {} };
+  });
+
+  if (CONFIG.BLOCK_ASSETS) {
+    await ctx.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
+  }
+
+  return ctx;
+}
+
 // ─── KIỂM TRA 1 BATCH LINK (mở browser riêng) ───────────────────────────────
 async function runBatch(urlList, label) {
   console.log(`\n${"═".repeat(52)}`);
@@ -714,48 +763,8 @@ async function runBatch(urlList, label) {
   const userDataDir = path.join(__dirname, 'edge_user_data');
 
   // ── Proxy context (chính) ──────────────────────────────────────
-  let contextProxy = await chromium.launchPersistentContext(userDataDir, {
-    headless: false,
-    executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      '--start-maximized',
-      '--disable-blink-features=AutomationControlled',
-      '--disable-features=IsolateOrigins,site-per-process',
-    ],
-    viewport: null,
-    proxy: { server: 'socks5://127.0.0.1:1080' },
-    userAgent:
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  });
+  let contextProxy = await createBrowserContext(userDataDir);
   sharedBrowserContext = contextProxy;
-
-  // ── Anti-detect: giảm fingerprint webdriver + các cờ anti-bot ───────────────
-  await contextProxy.addInitScript(() => {
-    // Ẩn navigator.webdriver
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    // Giả mạo permissions API
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
-    );
-    // Giả mạo plugins
-    Object.defineProperty(navigator, 'plugins', {
-      get: () => [1, 2, 3, 4, 5],
-    });
-    // Giả mạo languages
-    Object.defineProperty(navigator, 'languages', {
-      get: () => ['zh-CN', 'zh', 'en-US', 'en'],
-    });
-    // Xóa cờ chrome runtime
-    window.chrome = { runtime: {} };
-  });
-  if (CONFIG.BLOCK_ASSETS) {
-    await contextProxy.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
-  }
 
   // ── reconnectTunnel: close → reopen tunnel → new context ──────────────────────────────
   async function reconnectTunnel() {
@@ -766,37 +775,8 @@ async function runBatch(urlList, label) {
     console.log('[SOCKS] Mở lại tunnel...');
     await openTunnel();
     console.log('[SOCKS] Tạo context mới...');
-    contextProxy = await chromium.launchPersistentContext(userDataDir, {
-      headless: false,
-      executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-      ignoreDefaultArgs: ['--enable-automation'],
-      args: [
-        '--start-maximized',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-features=IsolateOrigins,site-per-process',
-      ],
-      viewport: null,
-      proxy: { server: 'socks5://127.0.0.1:1080' },
-      userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-        '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
+    contextProxy = await createBrowserContext(userDataDir);
     sharedBrowserContext = contextProxy;
-    await contextProxy.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-      const originalQuery = window.navigator.permissions.query;
-      window.navigator.permissions.query = (parameters) => (
-        parameters.name === 'notifications' ?
-          Promise.resolve({ state: Notification.permission }) :
-          originalQuery(parameters)
-      );
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en-US', 'en'] });
-      window.chrome = { runtime: {} };
-    });
-    if (CONFIG.BLOCK_ASSETS) {
-      await contextProxy.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}', (r) => r.abort());
-    }
     console.log('[SOCKS] Context mới đã sẵn sởng.');
     return { context: contextProxy };
   }
@@ -1271,7 +1251,7 @@ async function scheduleNext() {
 // ─── GRACEFUL SHUTDOWN ──────────────────────────────────────────────────────
 process.on('SIGINT', async () => {
   console.log('\n[SHUTDOWN] Nhận tín hiệu SIGINT, đang dọn dẹp...');
-  const toClose = [sharedBrowserContext, sharedBrowserContextDirect].filter(Boolean);
+  const toClose = [sharedBrowserContext].filter(Boolean);
   if (toClose.length) {
     try {
       await Promise.all(toClose.map((c) => c.close().catch(() => {})));
@@ -1281,14 +1261,13 @@ process.on('SIGINT', async () => {
     }
   }
   sharedBrowserContext = null;
-  sharedBrowserContextDirect = null;
   process.exit(0);
 });
 
 
 process.on('SIGTERM', async () => {
   console.log('\n[SHUTDOWN] Nhận tín hiệu SIGTERM, đang dọn dẹp...');
-  const toClose = [sharedBrowserContext, sharedBrowserContextDirect].filter(Boolean);
+  const toClose = [sharedBrowserContext].filter(Boolean);
   if (toClose.length) {
     try {
       await Promise.all(toClose.map((c) => c.close().catch(() => {})));
@@ -1298,7 +1277,6 @@ process.on('SIGTERM', async () => {
     }
   }
   sharedBrowserContext = null;
-  sharedBrowserContextDirect = null;
   process.exit(0);
 });
 
