@@ -103,11 +103,7 @@ async function sendDeadAlert(batch, threshold, totalResults) {
     text += `• ${b.url} — ${b.reason ?? '???'}\n`;
   }
   text += `\nTime: ${dateStr}\n`;
-  // threshold=1 means "alert immediately"; >1 means "alert after N consecutive fails"
-  const thresholdNote = threshold <= 1
-    ? '(alert on first failure)'
-    : `(threshold: ${threshold}+ consecutive fails)`;
-  text += `\nAlive: ${alive} | Dead: ${dead} ${thresholdNote}`;
+  text += `\nAlive: ${alive} | Dead: ${dead} (threshold: ${threshold}+ consecutive fails)`;
 
   const sent = await sendTelegramMessage(text);
   return { sent, count: batch.length };

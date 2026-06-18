@@ -89,7 +89,7 @@ function shouldSendRecoveryEmail(entry) {
  * notification marker. Until then, URLs remain eligible for retry.
  */
 function updateStateForResults(results, state, config) {
-  const threshold = config.EMAIL_NOTIFY_FAILURE_THRESHOLD ?? 1;
+  const threshold = config.EMAIL_NOTIFY_FAILURE_THRESHOLD ?? 3;
   const repeatEvery = config.EMAIL_NOTIFY_REPEAT_EVERY_FAILURES ?? 6;
   const notifyRecovery = config.EMAIL_NOTIFY_RECOVERY ?? true;
 
