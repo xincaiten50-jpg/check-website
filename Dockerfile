@@ -1,8 +1,9 @@
 FROM node:20-bookworm
 
-# Install dependencies: sshpass, Playwright system deps
+# Install dependencies: openssh-client (for tunnel) + Playwright system deps.
+# sshpass is no longer needed — auth uses a private key (SSH_KEY_PATH).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    sshpass \
+    openssh-client \
     chromium \
     chromium-sandbox \
     fonts-noto-cjk \
@@ -39,9 +40,14 @@ RUN npm ci --omit=dev
 # Copy app source
 COPY . .
 
-# Create non-root user
+# Create non-root user with a writable .ssh dir for the mounted key.
+# The private key MUST be mounted into the container at runtime, e.g.:
+#   docker run -v $HOME/.ssh/check-website:/home/appuser/.ssh/check-website:ro \
+#              -e SSH_KEY_PATH=/home/appuser/.ssh/check-website ...
 RUN useradd -m -s /bin/bash appuser && \
-    chown -R appuser:appuser /app
+    mkdir -p /home/appuser/.ssh && \
+    chown -R appuser:appuser /app /home/appuser/.ssh && \
+    chmod 700 /home/appuser/.ssh
 USER appuser
 
 ENV NODE_ENV=production
