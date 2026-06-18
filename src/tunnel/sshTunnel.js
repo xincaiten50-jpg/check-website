@@ -166,19 +166,22 @@ async function openTunnel() {
         });
       }
     }, 8000);
-
-    // Cleanup on signals
-    const cleanup = () => {
-      tunnelOpen = false;
-      if (sshProcess) {
-        sshProcess.kill('SIGTERM');
-        sshProcess = null;
-      }
-    };
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
   });
 }
+
+// Register signal handlers ONCE at module scope. Previously these were
+// registered inside openTunnel(), so each retry added another listener —
+// after 5 retries SIGINT would invoke cleanup 6 times. Idempotent cleanup
+// is now safe to call from multiple paths.
+const cleanup = () => {
+  tunnelOpen = false;
+  if (sshProcess) {
+    sshProcess.kill('SIGTERM');
+    sshProcess = null;
+  }
+};
+process.on('SIGINT', cleanup);
+process.on('SIGTERM', cleanup);
 
 /**
  * Closes the SSH connection and SOCKS5 server.
