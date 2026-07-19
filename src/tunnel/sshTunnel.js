@@ -1,17 +1,22 @@
 /**
  * SSH Tunnel — creates a local SOCKS5 proxy via SSH tunnel to a remote server.
  *
- * Uses system `ssh` with public-key auth (no sshpass). The private key path
- * is read from SSH_KEY_PATH and may start with `~` (expanded via os.homedir()).
- * Spawns: ssh -i <key> -N -D 1080 -o BatchMode=yes -o IdentitiesOnly=yes
- *         -o StrictHostKeyChecking=accept-new user@host
+ * Supports TWO auth methods (tried in order):
+ *   1. Public-key auth (recommended): set SSH_KEY_PATH to your private key file
+ *      Spawns: ssh -i <key> -N -D 1080 ...
+ *   2. Password auth (fallback): set SSH_PASSWORD to your password
+ *      Spawns: sshpass -p <pass> ssh -N -D 1080 ...
+ *
+ * A leading `~` in SSH_KEY_PATH is expanded to the user's home directory.
  *
  * Exported functions:
  *   openTunnel()  — opens SOCKS5 proxy at 127.0.0.1:1080; skips if already open
  *   closeTunnel() — kills SSH process and SOCKS5 server
  *
  * Env vars (from .env):
- *   SSH_HOST, SSH_PORT, SSH_USER, SSH_KEY_PATH
+ *   SSH_HOST, SSH_PORT, SSH_USER
+ *   SSH_KEY_PATH   — path to private key (for key auth)
+ *   SSH_PASSWORD   — password (for password auth, fallback)
  */
 
 const { spawn, execSync } = require('child_process');
@@ -78,8 +83,9 @@ async function openTunnel() {
     return;
   }
 
-  // Cleanup any orphaned ssh processes that might be hanging on port 1080
+  // Cleanup any orphaned ssh/sshpass processes that might be hanging on port 1080
   try {
+    execSync('pkill -f "sshpass.*-D.*1080"', { stdio: 'ignore' });
     execSync('pkill -f "ssh.*-D.*1080"', { stdio: 'ignore' });
     // Small delay to let the port be released
     await new Promise(r => setTimeout(r, 500));
@@ -98,46 +104,59 @@ async function openTunnel() {
   const port = parseInt(process.env.SSH_PORT || '22', 10);
   const user = process.env.SSH_USER;
   const rawKeyPath = process.env.SSH_KEY_PATH;
-  const keyPath = expandHome(rawKeyPath);
+  const keyPath = rawKeyPath ? expandHome(rawKeyPath) : null;
+  const password = process.env.SSH_PASSWORD;
 
-  if (!host || !user || !keyPath) {
-    throw new Error('[TUNNEL] Missing SSH config: SSH_HOST, SSH_USER, SSH_KEY_PATH must be set in .env');
+  if (!host || !user) {
+    throw new Error('[TUNNEL] Missing SSH config: SSH_HOST, SSH_USER must be set in .env');
   }
 
-  // Fail fast with a clear message if the key file is missing — much easier
-  // to debug than waiting for ssh to fail with a cryptic "Load key ...: No
-  // such file or directory" deep in stderr.
-  if (!fs.existsSync(keyPath)) {
-    throw new Error(`[TUNNEL] SSH key not found at ${keyPath} — set SSH_KEY_PATH in .env (got: ${rawKeyPath})`);
+  // Determine auth method: prefer key auth if key file exists, fall back to password
+  let useKeyAuth = false;
+  if (keyPath && fs.existsSync(keyPath)) {
+    console.log('[TUNNEL] Using public-key auth (key: %s)', keyPath);
+    useKeyAuth = true;
+  } else if (password) {
+    console.log('[TUNNEL] Using password auth (sshpass)');
+    useKeyAuth = false;
+  } else {
+    throw new Error('[TUNNEL] No SSH auth configured: set SSH_KEY_PATH (with existing key file) OR SSH_PASSWORD in .env');
   }
 
   return new Promise((resolve, reject) => {
     let resolvedFlag = false;
     let rejectTimer = null;
 
-    console.log('[TUNNEL] Starting SSH tunnel to %s:%d (key: %s)...', host, port, keyPath);
+    console.log('[TUNNEL] Starting SSH tunnel to %s:%d...', host, port);
 
-    // ssh with public-key auth, no password prompts.
-    // -N: no remote command (just port forwarding)
-    // -D 1080: dynamic SOCKS5 proxy on localhost:1080
-    // -o BatchMode=yes: never prompt; fail clearly if key is rejected
-    // -o IdentitiesOnly=yes: only use the key we provided (avoid "too many auth failures")
-    // -o StrictHostKeyChecking=accept-new: trust new hosts, reject changed ones
-    // -o ServerAliveInterval=30: keep connection alive
-    // -o ExitOnForwardFailure=yes: exit immediately if -D cannot bind
-    sshProcess = spawn('ssh', [
-      '-i', keyPath,
-      '-N',
-      '-D', String(SOCKS_PORT),
-      '-p', String(port),
-      '-o', 'BatchMode=yes',
-      '-o', 'IdentitiesOnly=yes',
-      '-o', 'StrictHostKeyChecking=accept-new',
-      '-o', 'ServerAliveInterval=30',
-      '-o', 'ServerAliveCountMax=3',
-      '-o', 'ExitOnForwardFailure=yes',
-      `${user}@${host}`,
-    ], {
+    let childArgs, childCmd;
+    const baseArgs = ['-N', '-D', String(SOCKS_PORT), '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes'];
+
+    if (useKeyAuth) {
+      // ssh with public-key auth
+      childCmd = 'ssh';
+      childArgs = [
+        '-i', keyPath,
+        '-o', 'BatchMode=yes',
+        '-o', 'IdentitiesOnly=yes',
+        '-p', String(port),
+        ...baseArgs,
+        `${user}@${host}`,
+      ];
+    } else {
+      // sshpass + ssh with password auth
+      childCmd = 'sshpass';
+      childArgs = [
+        '-p', password,
+        'ssh',
+        '-p', String(port),
+        ...baseArgs,
+        '-o', 'StrictHostKeyChecking=no',
+        `${user}@${host}`,
+      ];
+    }
+
+    sshProcess = spawn(childCmd, childArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: false,
     });
@@ -146,17 +165,15 @@ async function openTunnel() {
 
     sshProcess.stderr.on('data', (chunk) => {
       stderrData = Buffer.concat([stderrData, chunk]);
-      // Log ssh stderr in real time so auth errors / bad-permission warnings
-      // surface immediately instead of only at process exit.
       const text = chunk.toString('utf8').trim();
-      if (text) console.error(`[TUNNEL] ssh: ${text}`);
+      if (text) console.error(`[TUNNEL] ${childCmd}: ${text}`);
     });
 
     sshProcess.on('error', (err) => {
       if (!resolvedFlag) {
         resolvedFlag = true;
         clearTimeout(rejectTimer);
-        console.error('[TUNNEL] Failed to start ssh process: %s', err.message);
+        console.error('[TUNNEL] Failed to start %s process: %s', childCmd, err.message);
         reject(err);
       }
     });
@@ -167,20 +184,19 @@ async function openTunnel() {
       if (!resolvedFlag) {
         resolvedFlag = true;
         const stderrStr = stderrData.toString('utf8');
-        console.error('[TUNNEL] SSH process exited with code %d. stderr: %s', code, stderrStr);
-        reject(new Error(`SSH tunnel exited with code ${code}: ${stderrStr}`));
+        console.error('[TUNNEL] %s process exited with code %d. stderr: %s', childCmd, code, stderrStr);
+        reject(new Error(`${childCmd} tunnel exited with code ${code}: ${stderrStr}`));
       }
     });
 
     // Give it a few seconds to establish the tunnel
     rejectTimer = setTimeout(() => {
       if (!resolvedFlag) {
-        // Check if the process is still running and port is listening
         const netClient = net.connect(SOCKS_PORT, SOCKS_HOST, () => {
           netClient.destroy();
           resolvedFlag = true;
           tunnelOpen = true;
-          console.log('[TUNNEL] SOCKS5 opened at %s:%d (via ssh key auth)', SOCKS_HOST, SOCKS_PORT);
+          console.log('[TUNNEL] SOCKS5 opened at %s:%d (via %s)', SOCKS_HOST, SOCKS_PORT, useKeyAuth ? 'ssh key auth' : 'sshpass');
           resolve();
         });
 
@@ -202,10 +218,7 @@ async function openTunnel() {
   });
 }
 
-// Register signal handlers ONCE at module scope. Previously these were
-// registered inside openTunnel(), so each retry added another listener —
-// after 5 retries SIGINT would invoke cleanup 6 times. Idempotent cleanup
-// is now safe to call from multiple paths.
+// Register signal handlers ONCE at module scope.
 const cleanup = () => {
   tunnelOpen = false;
   if (sshProcess) {

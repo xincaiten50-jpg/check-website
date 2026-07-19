@@ -1,41 +1,125 @@
 {
   "_meta": {
-    "lastNormalReportDate": "2026-06-11"
+    "lastNormalReportDate": "2026-07-18"
   },
   "https://aj05.opnews.net": {
-    "consecutiveFailures": 4,
-    "lastFailureAt": "2026-06-18T10:13:10.917Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm644377&q=%20%E9%9F%A9%E5%9B%BD%E9%9A%86%E9%BC%BB%E6%89%8B%E6%9C%AF",
-    "statusCode": 200,
+    "consecutiveFailures": 7,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj05.opnews.net/\nCall log:\n  - navigating to \"https://aj05.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
     "notifiedAtCount": 3,
-    "recoveryNotified": false
+    "recoveryNotified": false,
+    "_recoveryPending": true
   },
-  "https://aj23.opnews.net": {
-    "consecutiveFailures": 2,
-    "lastFailureAt": "2026-06-18T10:13:10.917Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm875120&q=%20%E5%8F%8D%E6%B8%97%E9%80%8F%E6%B8%85%E6%B4%97%E8%AE%BE%E5%A4%87",
-    "statusCode": 200,
-    "notifiedAtCount": 0,
-    "recoveryNotified": false
+  "https://aj11.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj11.opnews.net/\nCall log:\n  - navigating to \"https://aj11.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj03.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj03.opnews.net/\nCall log:\n  - navigating to \"https://aj03.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj04.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj04.opnews.net/\nCall log:\n  - navigating to \"https://aj04.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
   },
   "https://aj01.opnews.net": {
-    "consecutiveFailures": 1,
-    "lastFailureAt": "2026-06-18T10:13:10.917Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm640209&q=%20%E4%B8%80%E8%88%AC%E7%9A%84%E6%95%B4%E4%BD%93%E5%8E%A8%E6%88%BF%E5%A4%9A%E5%B0%91%E9%92%B1",
-    "statusCode": 200,
-    "notifiedAtCount": 0,
-    "recoveryNotified": false
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj01.opnews.net/\nCall log:\n  - navigating to \"https://aj01.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj06.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj06.opnews.net/\nCall log:\n  - navigating to \"https://aj06.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj23.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj23.opnews.net/\nCall log:\n  - navigating to \"https://aj23.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj38.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj38.opnews.net/\nCall log:\n  - navigating to \"https://aj38.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://k1.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://k1.opnews.net/\nCall log:\n  - navigating to \"https://k1.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://k2.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://k2.opnews.net/\nCall log:\n  - navigating to \"https://k2.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
   },
   "https://aj07.opnews.net": {
-    "consecutiveFailures": 1,
-    "lastFailureAt": "2026-06-18T10:13:10.917Z",
-    "lastReason": "Trang trống hoặc nội dung quá ít",
-    "finalUrl": "https://wm.m.sm.cn/s?from=wm550790&q=%20%E8%B4%B4%E7%89%87led",
-    "statusCode": 200,
-    "notifiedAtCount": 0,
-    "recoveryNotified": false
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj07.opnews.net/\nCall log:\n  - navigating to \"https://aj07.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
+  },
+  "https://aj08.opnews.net": {
+    "consecutiveFailures": 3,
+    "lastFailureAt": "2026-07-01T05:33:58.947Z",
+    "lastReason": "page.goto: net::ERR_CERT_DATE_INVALID at https://aj08.opnews.net/\nCall log:\n  - navigating to \"https://aj08.opnews.net/\", waiting until \"load\"\n",
+    "finalUrl": null,
+    "statusCode": null,
+    "notifiedAtCount": 3,
+    "recoveryNotified": false,
+    "_recoveryPending": true
   }
 }

@@ -1142,8 +1142,10 @@ function getCliOptions() {
       console.error('   Vui lòng tạo file .env với nội dung từ .env.example');
       process.exit(1);
     }
-    if (!process.env.SSH_HOST || !process.env.SSH_USER || !process.env.SSH_KEY_PATH) {
-      console.error('❌ Lỗi: Thiếu SSH config (SSH_HOST, SSH_USER, SSH_KEY_PATH)');
+    const hasKeyAuth = process.env.SSH_KEY_PATH;
+    const hasPassAuth = process.env.SSH_PASSWORD;
+    if (!process.env.SSH_HOST || !process.env.SSH_USER || (!hasKeyAuth && !hasPassAuth)) {
+      console.error('❌ Lỗi: Thiếu SSH config (SSH_HOST, SSH_USER, và SSH_KEY_PATH hoặc SSH_PASSWORD)');
       console.error('   Vui lòng tạo file .env với nội dung từ .env.example');
       process.exit(1);
     }
