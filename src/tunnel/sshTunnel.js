@@ -67,8 +67,15 @@ async function isPortAlreadyListening() {
 /**
  * Opens the SSH tunnel. Idempotent — if already open (by this process OR another),
  * skips silently and reuses the existing SOCKS proxy on port 1080.
+ *
+ * Retries up to TUNNEL_OPEN_MAX_ATTEMPTS times: SSH server (đường consumer)
+ * thỉnh thoảng reset connection thoáng qua (18/8/2026: reset ở phiên 13:00
+ * dù mở bình thường ở 11:00) — một lần reset không đáng bỏ cả phiên.
  * @returns {Promise<void>}
  */
+const TUNNEL_OPEN_MAX_ATTEMPTS = 3;
+const TUNNEL_OPEN_RETRY_DELAY_MS = 20_000;
+
 async function openTunnel() {
   if (tunnelOpen) {
     console.log('[TUNNEL] SOCKS5 already open at %s:%d (local state), skipping', SOCKS_HOST, SOCKS_PORT);
@@ -123,6 +130,33 @@ async function openTunnel() {
     throw new Error('[TUNNEL] No SSH auth configured: set SSH_KEY_PATH (with existing key file) OR SSH_PASSWORD in .env');
   }
 
+  let lastErr;
+  for (let attempt = 1; attempt <= TUNNEL_OPEN_MAX_ATTEMPTS; attempt++) {
+    try {
+      await openTunnelFresh(host, port, user, keyPath, password, useKeyAuth);
+      return;
+    } catch (err) {
+      lastErr = err;
+      console.error('[TUNNEL] Mở tunnel lần %d/%d thất bại: %s', attempt, TUNNEL_OPEN_MAX_ATTEMPTS, err.message);
+      // Dọn process ssh nửa vừng trước khi thử lại
+      if (sshProcess) {
+        try { sshProcess.kill('SIGTERM'); } catch (e) { /* đã chết */ }
+        sshProcess = null;
+      }
+      tunnelOpen = false;
+      if (attempt < TUNNEL_OPEN_MAX_ATTEMPTS) {
+        console.log('[TUNNEL] Thử lại sau %ds...', TUNNEL_OPEN_RETRY_DELAY_MS / 1000);
+        await new Promise(r => setTimeout(r, TUNNEL_OPEN_RETRY_DELAY_MS));
+      }
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Single attempt: spawn ssh/sshpass and resolve once SOCKS5 port 1080 listens.
+ */
+function openTunnelFresh(host, port, user, keyPath, password, useKeyAuth) {
   return new Promise((resolve, reject) => {
     let resolvedFlag = false;
     let rejectTimer = null;
@@ -130,7 +164,8 @@ async function openTunnel() {
     console.log('[TUNNEL] Starting SSH tunnel to %s:%d...', host, port);
 
     let childArgs, childCmd;
-    const baseArgs = ['-N', '-D', String(SOCKS_PORT), '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes'];
+    // ConnectTimeout=15: ssh không treo hàng phút khi mạng nửa mở (SYN drop)
+    const baseArgs = ['-N', '-D', String(SOCKS_PORT), '-o', 'ConnectTimeout=15', '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes'];
 
     if (useKeyAuth) {
       // ssh with public-key auth
