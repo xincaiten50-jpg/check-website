@@ -5,7 +5,7 @@ const path = require('path');
 const https = require('https');
 const { logError: utilLogError } = require('./src/utils/errorLog');
 const { loadFailureState, saveFailureState, updateStateForResults, shouldSendNormalDailyReport, markNormalDailyReportSent } = require('./src/state/failureState');
-const { sendDeadAlert, sendRecoveryAlert, sendNormalDailyReport } = require('./src/notifiers/telegramNotifier');
+const { sendDeadAlert, sendRecoveryAlert, sendNormalDailyReport, sendMonitorFailureAlert } = require('./src/notifiers/telegramNotifier');
 const { openTunnel, closeTunnel } = require('./src/tunnel/sshTunnel');
 const { getSlotKey } = require('./src/utils/schedule');
 
@@ -72,7 +72,10 @@ const CONFIG = {
   RETRY_MAX_ATTEMPTS: 5, // Giới hạn số lần retry link chết trong 1 session
   EMAIL_NOTIFY_FAILURE_THRESHOLD:   parseInt(process.env.EMAIL_NOTIFY_FAILURE_THRESHOLD || '3', 10),
   EMAIL_NOTIFY_REPEAT_EVERY_FAILURES: parseInt(process.env.EMAIL_NOTIFY_REPEAT_EVERY_FAILURES || '6', 10),
-  EMAIL_NOTIFY_RECOVERY:  process.env.EMAIL_NOTIFY_RECOVERY !== 'false',
+  // Recovery alert đã bị remove (Bao yêu cầu tắt). Giữ true sẽ để lại các entry
+  // "_recoveryPending" ma trong failure-state.json mãi mãi (xem entries 7/2026);
+  // false giúp link sống lại thì entry được dọn sạch.
+  EMAIL_NOTIFY_RECOVERY:  false,
   EMAIL_NOTIFY_DAILY_NORMAL: process.env.EMAIL_NOTIFY_DAILY_NORMAL !== 'false',
   EMAIL_DAILY_NORMAL_HOUR:  parseInt(process.env.EMAIL_DAILY_NORMAL_HOUR || '17', 10),
   ERROR_LOG_MAX_BYTES:   parseInt(process.env.ERROR_LOG_MAX_BYTES || String(1048576), 10),
@@ -86,18 +89,59 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const randDelay = () =>
   sleep(CONFIG.DELAY_MIN_MS + Math.random() * (CONFIG.DELAY_MAX_MS - CONFIG.DELAY_MIN_MS));
 
-// ─── SOCKS ERROR DETECTION ───────────────────────────────────────────────────
+// ─── SOCKS / INFRA ERROR DETECTION ───────────────────────────────────────────
+// Infra errors: proxy/tunnel/network của CHÍNH MÌNH bị lỗi — không phải link chết.
+// Dùng để (a) reconnect tunnel giữa chừng và (b) đánh dấu kết quả infraError
+// để không đếm vào consecutiveFailures.
 const SOCKS_ERROR_PATTERNS = [
   'ERR_SOCKS_CONNECTION_FAILED',
   'ERR_SOCKS_CONNECTION_TIMEOUT',
   'ERR_SOCKS_UNKNOWN_HOST',
   'SOCKS connection failed',
   'SOCKS connection timeout',
+  'ERR_PROXY_CONNECTION_FAILED',
+  'ERR_PROXY_RESOLUTION_FAILED',
 ];
 
 function isSocksError(err) {
   const msg = err?.message || String(err);
   return SOCKS_ERROR_PATTERNS.some((p) => msg.includes(p));
+}
+
+// ─── MONITOR FAILURE ALERT ───────────────────────────────────────────────────
+// Gửi khi phiên check crash (mất browser/tunnel/mạng). Trước đây monitor im lặng
+// đúng lúc nó bị hỏng (14–17/8/2026: mất Chromium + mất mạng → 0 thông báo).
+// Cooldown 1 giờ, persist ra file để sống qua restart storm của pm2.
+const MONITOR_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
+const MONITOR_ALERT_COOLDOWN_FILE = path.join(__dirname, '.monitor-alert-cooldown.json');
+let monitorFailureLastSentAt = 0;
+
+async function notifyMonitorFailure(err, triggerHour) {
+  const now = Date.now();
+  if (now - monitorFailureLastSentAt < MONITOR_FAILURE_COOLDOWN_MS) return;
+  try {
+    if (fs.existsSync(MONITOR_ALERT_COOLDOWN_FILE)) {
+      const marker = JSON.parse(fs.readFileSync(MONITOR_ALERT_COOLDOWN_FILE, 'utf-8'));
+      const lastSentAt = Date.parse(marker?.lastSentAt ?? '') || 0;
+      if (now - lastSentAt < MONITOR_FAILURE_COOLDOWN_MS) return;
+    }
+  } catch { /* marker hỏng — coi như chưa từng gửi */ }
+
+  const reason = String(err?.message ?? err)
+    .split('\n').slice(0, 3).join(' | ')
+    .slice(0, 300);
+
+  const result = await sendMonitorFailureAlert(reason, triggerHour);
+  if (result.sent) {
+    monitorFailureLastSentAt = now;
+    console.error('📱 Monitor-failure alert sent via Telegram');
+    try {
+      fs.writeFileSync(MONITOR_ALERT_COOLDOWN_FILE,
+        JSON.stringify({ lastSentAt: new Date(now).toISOString() }, null, 2), 'utf-8');
+    } catch { /* best effort */ }
+  } else {
+    console.error('📱 Monitor-failure alert Telegram FAILED');
+  }
 }
 
 const cycleTracker = {
@@ -535,7 +579,7 @@ async function clickFirstTopicAndWait(page) {
 }
 
 // ─── TẠO OBJECT KẾT QUẢ ─────────────────────────────────────────────────────
-function makeResult(url, ok, status, reason, finalUrl, title) {
+function makeResult(url, ok, status, reason, finalUrl, title, infraError = false) {
   const result = {
     url,
     ok,
@@ -543,6 +587,7 @@ function makeResult(url, ok, status, reason, finalUrl, title) {
     reason:    ok ? null : (reason ?? null),
     finalUrl:  finalUrl && finalUrl !== url ? finalUrl : null,
     title:     title ?? null,
+    infraError: !ok ? !!infraError : false,
     timestamp: new Date().toISOString(),
   };
   if (ok) {
@@ -703,6 +748,13 @@ async function checkLink(context, reconnectTunnel, url) {
       lastErr = err;
       const socksNote = isSocksError(err) ? ' [SOCKS]' : '';
       console.warn(`⚠️  Lần ${attempt} thất bại [${nowLocal()}]${socksNote}: ${url} — ${err.message}`);
+      // Lỗi hạ tầng (proxy/tunnel/mạng): attempt kế tiếp sẽ reconnect tunnel 1 lần;
+      // nếu VẪN lỗi hạ tầng thì dừng ngay — không điểm ngồi retry hết 7 lần
+      // (mỗi lần burn một page timeout 40s, đây là lý do phiên check kéo dài 2h+).
+      if (isSocksError(err) && attempt >= 2) {
+        console.warn(`⛔ [SOCKS] Lỗi hạ tầng vẫn còn sau reconnect — dừng retry link này: ${url}`);
+        break;
+      }
       if (attempt <= CONFIG.RETRY_MAX) await sleep(2000 * attempt);
     } finally {
       await page.close().catch(() => {});
@@ -710,7 +762,7 @@ async function checkLink(context, reconnectTunnel, url) {
   }
 
   _logError(`FAILED ${url}: ${lastErr?.message}`);
-  return makeResult(url, false, null, lastErr?.message ?? 'Unknown error');
+  return makeResult(url, false, null, lastErr?.message ?? 'Unknown error', null, null, isSocksError(lastErr));
 }
 
 // ─── CONCURRENCY POOL ────────────────────────────────────────────────────────
@@ -783,7 +835,9 @@ async function runBatch(urlList, label) {
     await openTunnel();
   } catch (err) {
     console.error(`[TUNNEL] Failed to open tunnel: ${err.message}`);
-    process.exit(1);
+    // Throw thay vì process.exit — scheduler catch sẽ gửi alert Telegram
+    // và giữ process sống chờ khung giờ kế tiếp (exit gây restart storm pm2).
+    throw new Error(`Không mở được SSH tunnel: ${err.message}`);
   }
 
   const userDataDir = path.join(__dirname, 'edge_user_data');
@@ -927,6 +981,58 @@ async function runSession(sessionNum, triggerHour) {
   const allLinks = fs.readFileSync(CONFIG.INPUT_FILE, 'utf-8')
     .split('\n').map((l) => l.trim()).filter(Boolean);
 
+  // ── State & notification pipeline ────────────────────────────────────────
+  // Snapshot đầu phiên; checkpoint (sau lần check chính) lẫn lần save cuối
+  // (sau retry) đều tính lại từ snapshot này — retry upgrade không double-count.
+  const failureStatePath = path.join(__dirname, CONFIG.FAILURE_STATE_FILE);
+  const baseState = loadFailureState(failureStatePath);
+
+  const applyResultsToState = async (currentResults, phaseLabel) => {
+    const state = JSON.parse(JSON.stringify(baseState));
+    const { deadBatch, state: updatedState, markDeadNotified } =
+      updateStateForResults(currentResults, state, CONFIG);
+
+    // Send dead alert webhook — only mark as notified AFTER successful send
+    if (deadBatch.length > 0) {
+      const result = await sendDeadAlert(
+        deadBatch,
+        CONFIG.EMAIL_NOTIFY_FAILURE_THRESHOLD,
+        currentResults,
+      );
+      if (result.sent) {
+        console.log(`📱 Dead alert sent via Telegram (${result.count} link(s)) [${phaseLabel}]`);
+        markDeadNotified(deadBatch.map((b) => b.url));
+      } else {
+        console.error(`📱 Dead alert Telegram FAILED [${phaseLabel}]: ${result.error}`);
+        _logError(`TELEGRAM SEND FAILED [dead/${phaseLabel}]: ${result.error}`);
+        // Do NOT mark as notified — remain eligible for next session
+      }
+    }
+    // [REMOVED] Recovery alert — Bao requested to disable recovery notifications
+
+    // ── Daily normal report (only if all links alive and trigger hour matches) ─
+    // Dead alerts take priority — skip normal report if any link is still dead.
+    const deadCount = currentResults.filter((r) => !r.ok).length;
+    if (deadCount === 0 && typeof triggerHour === 'number') {
+      const nowParts = getTimeInTimezone(new Date());
+      const vietnamDate = formatDateKey(nowParts);
+      if (shouldSendNormalDailyReport(currentResults, triggerHour, vietnamDate, updatedState, CONFIG)) {
+        const result = await sendNormalDailyReport(currentResults, CONFIG.EMAIL_DAILY_NORMAL_HOUR);
+        if (result.sent) {
+          console.log(`📱 Daily normal report sent via Telegram (${currentResults.length} alive)`);
+          markNormalDailyReportSent(updatedState, vietnamDate);
+        } else {
+          console.error(`📱 Daily normal report Telegram FAILED: ${result.error}`);
+          _logError(`TELEGRAM SEND FAILED [normal-daily]: ${result.error}`);
+          // Do NOT mark as sent — allow next eligible run/test to retry
+        }
+      }
+    }
+
+    // Atomic save of failure state
+    saveFailureState(failureStatePath, updatedState);
+  };
+
   // ── Lần tra đầu tiên ────────────────────────────────────────────────────
   let results = await runBatch(allLinks, `Phiên #${sessionNum} — Lần tra chính`);
   fs.writeFileSync(CONFIG.OUTPUT_FILE, JSON.stringify(results, null, 2), 'utf-8');
@@ -939,96 +1045,66 @@ async function runSession(sessionNum, triggerHour) {
   const summary1 = buildSummary(results, `Phiên #${sessionNum} — Lần tra chính`, allLinks.length);
   console.log(summary1.console);
 
+  // CHECKPOINT: lưu state + gửi thông báo NGAY sau lần check chính. Nếu process
+  // chết giữa vòng retry (có thể kéo dài hàng giờ), kết quả lần chính không bị
+  // bỏ mất — đây là lý do alert bị lỡ im lặng suốt 17–18/8/2026.
+  await applyResultsToState(results, 'main');
+
+  // ── Infra guard ──────────────────────────────────────────────────────────
+  // Mọi link "chết" đều do lỗi proxy/tunnel → link không hề chết, hạ tầng mình
+  // bị lỗi. Chỉ retry 1 lần (chống blip ngắn), không đốt 5 vòng retry.
+  const allFailuresInfra = dead.length > 0 && dead.every((r) => r.infraError);
+  const maxRetries = allFailuresInfra ? 1 : CONFIG.RETRY_MAX_ATTEMPTS;
+  if (allFailuresInfra) {
+    console.error(`🚨 [INFRA] Cả ${dead.length} link "chết" đều do lỗi proxy/tunnel — giới hạn 1 lần retry.`);
+    await notifyMonitorFailure(
+      new Error(`Proxy/tunnel lỗi: ${dead.length}/${results.length} link không check được`),
+      triggerHour,
+    );
+  }
+
   // ── Retry loop ───────────────────────────────────────────────────────────
   let retryNum = 0;
-  while (dead.length > 0 && retryNum < CONFIG.RETRY_MAX_ATTEMPTS) {
-    retryNum++;
-    const retryMins = CONFIG.RETRY_DEAD_MS / 60_000;
-    console.log(`\n[RETRY] Lần ${retryNum}/${CONFIG.RETRY_MAX_ATTEMPTS} — còn ${dead.length} link chết — chờ ${retryMins} phút... (${nowLocal()})`);
-    await sleep(CONFIG.RETRY_DEAD_MS);
+  try {
+    while (dead.length > 0 && retryNum < maxRetries) {
+      retryNum++;
+      const retryMins = CONFIG.RETRY_DEAD_MS / 60_000;
+      console.log(`\n[RETRY] Lần ${retryNum}/${maxRetries} — còn ${dead.length} link chết — chờ ${retryMins} phút... (${nowLocal()})`);
+      await sleep(CONFIG.RETRY_DEAD_MS);
 
-    const deadUrls   = dead.map((r) => r.url);
-    const retryRes   = await runBatch(deadUrls, `Phiên #${sessionNum} — Retry #${retryNum}`);
+      const deadUrls   = dead.map((r) => r.url);
+      const retryRes   = await runBatch(deadUrls, `Phiên #${sessionNum} — Retry #${retryNum}`);
 
-    // Cập nhật vào kết quả tổng — chỉ upgrade fail→success, không downgrade success→fail
-    for (const r of retryRes) {
-      const idx = results.findIndex((x) => x.url === r.url);
-      if (idx !== -1) {
-        if (r.ok && !results[idx].ok) {
-          // Retry thành công + trước đó fail → upgrade lên success
-          results[idx] = r;
+      // Cập nhật vào kết quả tổng — chỉ upgrade fail→success, không downgrade success→fail
+      for (const r of retryRes) {
+        const idx = results.findIndex((x) => x.url === r.url);
+        if (idx !== -1) {
+          if (r.ok && !results[idx].ok) {
+            // Retry thành công + trước đó fail → upgrade lên success
+            results[idx] = r;
+          }
+          // Nếu retry fail + trước đó đã success → giữ nguyên success, không ghi đè
         }
-        // Nếu retry fail + trước đó đã success → giữ nguyên success, không ghi đè
       }
+      fs.writeFileSync(CONFIG.OUTPUT_FILE, JSON.stringify(results, null, 2), 'utf-8');
+
+      alive = results.filter((r) => r.ok);
+      dead  = results.filter((r) => !r.ok);
+
+      const summaryR = buildSummary(results, `Phiên #${sessionNum} — Retry #${retryNum}`, allLinks.length);
+      console.log(summaryR.console);
     }
-    fs.writeFileSync(CONFIG.OUTPUT_FILE, JSON.stringify(results, null, 2), 'utf-8');
 
-    alive = results.filter((r) => r.ok);
-    dead  = results.filter((r) => !r.ok);
-
-    const summaryR = buildSummary(results, `Phiên #${sessionNum} — Retry #${retryNum}`, allLinks.length);
-    console.log(summaryR.console);
-  }
-
-  const failureStatePath = path.join(__dirname, CONFIG.FAILURE_STATE_FILE);
-  const failureState = loadFailureState(failureStatePath);
-
-  const { deadBatch, recoveryBatch, state: updatedState, markDeadNotified, markRecoveryNotified } = updateStateForResults(results, failureState, CONFIG);
-
-  // Send dead alert webhook — only mark as notified AFTER successful send
-  if (deadBatch.length > 0) {
-    const result = await sendDeadAlert(
-      deadBatch,
-      CONFIG.EMAIL_NOTIFY_FAILURE_THRESHOLD,
-      results,
-    );
-    if (result.sent) {
-      console.log(`📱 Dead alert sent via Telegram (${result.count} link(s))`);
-      markDeadNotified(deadBatch.map((b) => b.url));
-    } else {
-      console.error(`📱 Dead alert Telegram FAILED: ${result.error}`);
-      _logError(`TELEGRAM SEND FAILED [dead]: ${result.error}`);
-      // Do NOT mark as notified — remain eligible for next session
-    }
-  }
-
-  // [REMOVED] Recovery alert — Bao requested to disable recovery notifications
-  // if (recoveryBatch.length > 0) {
-  //   const result = await sendRecoveryAlert(recoveryBatch, results);
-  //   if (result.sent) {
-  //     console.log(`📱 Recovery alert sent via Telegram (${result.count} link(s))`);
-  //     markRecoveryNotified(recoveryBatch.map((b) => b.url));
-  //   } else {
-  //     console.error(`📱 Recovery Telegram FAILED: ${result.error}`);
-  //     _logError(`TELEGRAM SEND FAILED [recovery]: ${result.error}`);
-  //   }
-  // }
-
-  // ── Daily normal report (only if all links alive and trigger hour matches) ─
-  // Dead alerts take priority — skip normal report if any link is still dead.
-  const aliveCount = results.filter((r) => r.ok).length;
-  const deadCount  = results.filter((r) => !r.ok).length;
-  if (deadCount === 0 && typeof triggerHour === 'number') {
-    const nowParts = getTimeInTimezone(new Date());
-    const vietnamDate = formatDateKey(nowParts);
-    if (shouldSendNormalDailyReport(results, triggerHour, vietnamDate, updatedState, CONFIG)) {
-      const result = await sendNormalDailyReport(results, CONFIG.EMAIL_DAILY_NORMAL_HOUR);
-      if (result.sent) {
-        console.log(`📱 Daily normal report sent via Telegram (${aliveCount} alive)`);
-        markNormalDailyReportSent(updatedState, vietnamDate);
-      } else {
-        console.error(`📱 Daily normal report Telegram FAILED: ${result.error}`);
-        _logError(`TELEGRAM SEND FAILED [normal-daily]: ${result.error}`);
-        // Do NOT mark as sent — allow next eligible run/test to retry
+      // Lần save cuối: tính lại từ cùng snapshot với kết quả đã được retry upgrade.
+      // (Bỏ qua khi không có retry — checkpoint phía trên đã lưu đủ.)
+      if (retryNum > 0) {
+        await applyResultsToState(results, 'final');
       }
-    }
+  } finally {
+    // Đóng tunnel kể cả khi retry crash giữa chừng (ví dụ tunnel chết) —
+    // tránh leak process ssh giữ port 1080.
+    await closeTunnel();
   }
-
-  // Atomic save of failure state
-  saveFailureState(failureStatePath, updatedState);
-
-  // Close tunnel after notifications done
-  await closeTunnel();
 
   // ── Post-session notifications ──────────────────────────────────────────
   if (retryNum > 0) {
@@ -1204,7 +1280,9 @@ function getCliOptions() {
           await runSession(session, nextTriggerHour);
         } catch (err) {
           _logError(`SESSION FAILED [${nextTriggerHour ?? 'manual'}]: ${err?.stack ?? err?.message ?? err}`);
-          console.error(`âŒ PhiĂªn #${session} lá»—i: ${err?.message ?? err}`);
+          console.error(`❌ Phiên #${session} lỗi: ${err?.message ?? err}`);
+          // Monitor tự nó bị hỏng — báo luôn để đừng im lặng lúc cần báo nhất
+          await notifyMonitorFailure(err, nextTriggerHour);
         }
       }
     } finally {

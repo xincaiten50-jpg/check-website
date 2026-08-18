@@ -4,6 +4,9 @@ edge_user_data/
 *.log
 results.json
 check-website-docker.tar
+.monitor-alert-cooldown.json
+failure-state.json
+.DS_Store
 # Dev/debug screenshots
 screenshot-*.png
 *.png

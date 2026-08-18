@@ -5,6 +5,7 @@
  *   sendDeadAlert(batch, threshold, totalResults)
  *   sendRecoveryAlert(batch, totalResults)
  *   sendNormalDailyReport(totalResults, scheduledHour)
+ *   sendMonitorFailureAlert(reason, triggerHour)
  *
  * Env vars:
  *   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -132,6 +133,28 @@ async function sendRecoveryAlert(batch, totalResults) {
 }
 
 /**
+ * Send monitor-failure alert when a session crashes or infrastructure
+ * (browser/SSH tunnel/network) is broken — the monitor itself can't check.
+ * Without this, the monitor stayed silent exactly when it was broken.
+ * @param {string} reason - short reason (caller truncates)
+ * @param {number|null} triggerHour - scheduled hour slot, if any
+ */
+async function sendMonitorFailureAlert(reason, triggerHour) {
+  const dateStr = nowVnIso().slice(0, 16);
+  const slot = typeof triggerHour === 'number'
+    ? ` (khung ${String(triggerHour).padStart(2, '0')}:00 VN)` : '';
+
+  const text =
+    `🚨 [AJ-MONITOR] Phiên check LỖI${slot}\n\n` +
+    `Lý do: ${reason}\n\n` +
+    `Time: ${dateStr}\n` +
+    `⚠️ Lỗi hạ tầng (browser/tunnel/mạng) — không phải link chết.`;
+
+  const sent = await sendTelegramMessage(text);
+  return { sent };
+}
+
+/**
  * Send normal daily report (all links alive at scheduled hour).
  * @param {Array} totalResults - all results this session
  * @param {number} scheduledHour - the scheduled hour
@@ -154,4 +177,4 @@ async function sendNormalDailyReport(totalResults, scheduledHour) {
   return { sent, count: totalResults.length };
 }
 
-module.exports = { sendDeadAlert, sendRecoveryAlert, sendNormalDailyReport };
+module.exports = { sendDeadAlert, sendRecoveryAlert, sendNormalDailyReport, sendMonitorFailureAlert };

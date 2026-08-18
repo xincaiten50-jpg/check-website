@@ -79,6 +79,10 @@ function shouldSendRecoveryEmail(entry) {
 /**
  * Update failure state based on session results.
  *
+ * Results with infraError=true (proxy/tunnel/network failure of the monitor
+ * itself) are skipped entirely: they are not dead links, so they neither
+ * increment nor reset consecutiveFailures.
+ *
  * @param {Array} results — session results from runSession
  * @param {Object} state — current failure state (mutated in place)
  * @param {Object} config — threshold config
@@ -120,6 +124,12 @@ function updateStateForResults(results, state, config) {
       }
     } else {
       // Link is dead
+      if (r.infraError) {
+        // Lỗi hạ tầng (proxy/tunnel của monitor), không phải link chết —
+        // bỏ qua hoàn toàn: không đếm tăng, cũng không reset consecutiveFailures.
+        continue;
+      }
+
       if (!state[url]) {
         state[url] = {
           consecutiveFailures: 0,
