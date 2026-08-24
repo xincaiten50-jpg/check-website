@@ -982,8 +982,9 @@ async function runSession(sessionNum, triggerHour) {
     .split('\n').map((l) => l.trim()).filter(Boolean);
 
   // ── State & notification pipeline ────────────────────────────────────────
-  // Snapshot đầu phiên; checkpoint (sau lần check chính) lẫn lần save cuối
-  // (sau retry) đều tính lại từ snapshot này — retry upgrade không double-count.
+  // Chỉ áp dụng state và gửi thông báo một lần, sau khi toàn bộ retry
+  // của phiên đã kết thúc. Kết quả tạm thời của lần tra chính không
+  // được phép phát Telegram vì có thể sống lại ngay khi retry.
   const failureStatePath = path.join(__dirname, CONFIG.FAILURE_STATE_FILE);
   const baseState = loadFailureState(failureStatePath);
 
@@ -1045,22 +1046,13 @@ async function runSession(sessionNum, triggerHour) {
   const summary1 = buildSummary(results, `Phiên #${sessionNum} — Lần tra chính`, allLinks.length);
   console.log(summary1.console);
 
-  // CHECKPOINT: lưu state + gửi thông báo NGAY sau lần check chính. Nếu process
-  // chết giữa vòng retry (có thể kéo dài hàng giờ), kết quả lần chính không bị
-  // bỏ mất — đây là lý do alert bị lỡ im lặng suốt 17–18/8/2026.
-  await applyResultsToState(results, 'main');
-
   // ── Infra guard ──────────────────────────────────────────────────────────
   // Mọi link "chết" đều do lỗi proxy/tunnel → link không hề chết, hạ tầng mình
   // bị lỗi. Chỉ retry 1 lần (chống blip ngắn), không đốt 5 vòng retry.
   const allFailuresInfra = dead.length > 0 && dead.every((r) => r.infraError);
   const maxRetries = allFailuresInfra ? 1 : CONFIG.RETRY_MAX_ATTEMPTS;
   if (allFailuresInfra) {
-    console.error(`🚨 [INFRA] Cả ${dead.length} link "chết" đều do lỗi proxy/tunnel — giới hạn 1 lần retry.`);
-    await notifyMonitorFailure(
-      new Error(`Proxy/tunnel lỗi: ${dead.length}/${results.length} link không check được`),
-      triggerHour,
-    );
+    console.error(`🚨 [INFRA] Cả ${dead.length} kết quả lỗi đều do proxy/tunnel — retry 1 lần trước khi quyết định báo Telegram.`);
   }
 
   // ── Retry loop ───────────────────────────────────────────────────────────
@@ -1095,15 +1087,25 @@ async function runSession(sessionNum, triggerHour) {
       console.log(summaryR.console);
     }
 
-      // Lần save cuối: tính lại từ cùng snapshot với kết quả đã được retry upgrade.
-      // (Bỏ qua khi không có retry — checkpoint phía trên đã lưu đủ.)
-      if (retryNum > 0) {
-        await applyResultsToState(results, 'final');
-      }
   } finally {
     // Đóng tunnel kể cả khi retry crash giữa chừng (ví dụ tunnel chết) —
     // tránh leak process ssh giữ port 1080.
     await closeTunnel();
+  }
+
+  // Chỉ kết quả CUỐI CÙNG của cả phiên mới được lưu và phát Telegram.
+  // Nhờ vậy, lỗi tạm thời đã hết sau retry sẽ không gây cảnh báo nhầm.
+  await applyResultsToState(results, 'final');
+
+  const unresolvedInfra = dead.filter((r) => r.infraError);
+  if (unresolvedInfra.length > 0) {
+    await notifyMonitorFailure(
+      new Error(
+        `Proxy/tunnel vẫn lỗi sau khi hết phiên: ` +
+        `${unresolvedInfra.length}/${results.length} link không check được sau ${retryNum} lần retry`,
+      ),
+      triggerHour,
+    );
   }
 
   // ── Post-session notifications ──────────────────────────────────────────
